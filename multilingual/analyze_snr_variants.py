@@ -137,27 +137,38 @@ def variant_decision_acc_correlation(df: pd.DataFrame, variants: list[str]) -> p
             "r2": (r * r) if r is not None and np.isfinite(r) else np.nan,
             "spearman_r": rho,
         })
-    return pd.DataFrame(rows).sort_values("r2", ascending=False)
+    # Rank by Pearson r descending: positive correlations on top, anti-signal
+    # at the bottom. Sorting by r² conflates strong positive with strong
+    # negative correlations.
+    return pd.DataFrame(rows).sort_values("pearson_r", ascending=False)
 
 
 # --- plotting ---------------------------------------------------------------
 
-def _ranked_variants(df: pd.DataFrame, variants: list[str]) -> list[tuple[str, float]]:
+def _ranked_variants(df: pd.DataFrame, variants: list[str]) -> list[tuple[str, float, float]]:
+    """Return [(variant, pearson_r, r2)] ordered by Pearson r descending."""
     corr = variant_decision_acc_correlation(df, variants)
-    return [(row["variant"], row["r2"]) for _, row in corr.iterrows()]
+    return [(row["variant"], row["pearson_r"], row["r2"]) for _, row in corr.iterrows()]
 
 
-def render_grid(df: pd.DataFrame, variants_ranked: list[tuple[str, float]],
+# Minimum number of (task, decision-acc) points to draw a regression line.
+# n=3,4 polyfits with quantized decision accuracy produce visually misleading
+# fits and confidence bands.
+_MIN_FIT_POINTS = 5
+
+
+def render_grid(df: pd.DataFrame, variants_ranked: list[tuple[str, float, float]],
                 save_path: Path, title: str) -> bool:
-    """Stack one row of (size) scatter panels per SNR variant; rows ordered by R²."""
+    """Stack one row of (size) scatter panels per SNR variant; rows ordered by Pearson r."""
     n_rows = len(variants_ranked)
     n_cols = len(SMALL_SIZES)
     if n_rows == 0:
         return False
     fig, axes = plt.subplots(
-        n_rows, n_cols, figsize=(5.5 * n_cols, 4 * n_rows), squeeze=False,
+        n_rows, n_cols, sharey="row",
+        figsize=(5.5 * n_cols, 4 * n_rows), squeeze=False,
     )
-    for r, (variant, r2) in enumerate(variants_ranked):
+    for r, (variant, pearson_r, r2) in enumerate(variants_ranked):
         for c, size in enumerate(SMALL_SIZES):
             ax = axes[r][c]
             snr_c = snr_col(variant, size)
@@ -174,11 +185,13 @@ def render_grid(df: pd.DataFrame, variants_ranked: list[tuple[str, float]],
             y = sub[da_c].to_numpy()
             texts = plot_snr_scatter(ax, x, y, sub.index.tolist(),
                                      size=size, task_names={})
-            plot_fit = len(sub) >= 3
+            plot_fit = len(sub) >= _MIN_FIT_POINTS
             config_snr_ax(ax, x, y, texts, xlabel=f"SNR {variant} ({size})",
                           plot_fit=plot_fit, log_scale=True)
-            r2_label = "" if not np.isfinite(r2) else f"  (overall R²={r2:.3f})"
-            ax.set_title(f"{variant} — {size}{r2_label} (n={len(sub)})", fontsize=10)
+            r_label = ""
+            if np.isfinite(pearson_r):
+                r_label = f"  (overall r={pearson_r:+.3f}, R²={r2:.3f})"
+            ax.set_title(f"{variant} — {size}{r_label} (n={len(sub)})", fontsize=10)
     fig.suptitle(title, fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.995))
     fig.savefig(save_path, dpi=120)
@@ -201,21 +214,28 @@ def main():
     ranked = _ranked_variants(df, variants)
     render_grid(df, ranked, OUT_DIR / "snr_vs_decision_accuracy.png",
                 title="SNR vs decision accuracy — all benchmarks "
-                      "(variants ordered by R²)")
+                      "(variants ordered by Pearson r)")
     print(f"Wrote → {OUT_DIR / 'snr_vs_decision_accuracy.png'}")
 
-    # Per-language figures.
+    # Per-language figures. Skip languages whose tasks don't yield enough
+    # valid (snr, decision_acc) points to render a meaningful fit on any size.
     df_lang = df.copy()
     df_lang["language"] = [assign_language(t) for t in df_lang.index]
     for lang, sub in sorted(df_lang.groupby("language")):
         sub = sub.drop(columns=["language"])
-        if len(sub) < 2:
+        max_valid = max(
+            (sub[f"decision_acc_{s}"].dropna().size for s in SMALL_SIZES),
+            default=0,
+        )
+        if max_valid < _MIN_FIT_POINTS:
+            print(f"Skip {lang}: only {max_valid} valid decision-acc points "
+                  f"on the best size (need ≥{_MIN_FIT_POINTS}).")
             continue
         ranked_lang = _ranked_variants(sub, variants)
         path = OUT_DIR / f"snr_vs_decision_accuracy_{lang}.png"
         ok = render_grid(sub, ranked_lang, path,
                          title=f"SNR vs decision accuracy — {lang} "
-                               f"({len(sub)} benchmarks; variants ordered by R²)")
+                               f"({len(sub)} benchmarks; variants ordered by Pearson r)")
         if ok:
             print(f"Wrote → {path}")
 

@@ -73,7 +73,11 @@ def per_mix_inputs(df, task, size, last_n=LAST_N):
     step_noise = np.array([np.std(a) for a in last_arrays])
     data_scores = np.array([a[-1] for a in last_arrays])
     data_scores_last_n = np.array([a.mean() for a in last_arrays])
-    data_noise = step_noise.copy()
+    # Cross-mix std of per-mix final scores. Only `rel_std_snr` reads this
+    # (np.mean of an array of identicals = the scalar itself), but it's the
+    # canonical SNR variant — passing per-mix step-std here collapses signal
+    # to noise and yields ~1.0 for every cell.
+    data_noise = np.full_like(data_scores, np.std(data_scores))
     return step_noise, data_scores, data_noise, data_scores_last_n
 
 
