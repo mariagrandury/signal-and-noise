@@ -1,7 +1,10 @@
-"""Run the SNR pipeline on the 12 custom Apertus pretraining models.
+"""Render the per-benchmark and per-language acc-vs-FLOPs grids for the
+12 custom Apertus pretraining checkpoints.
 
-Reuses the existing signal-and-noise compute + plotting helpers; this file
-just wires them up with Apertus-specific values (sizes, mixtures, target).
+The signal/noise/decision-accuracy analysis lives in the sibling script
+``run_apertus_snr_variants.py`` (writes the variants CSV) +
+``analyze_snr_variants.py`` (renders the SNR-vs-DA grids and heatmaps).
+This file is the curve-viewer.
 """
 
 from __future__ import annotations
@@ -18,14 +21,11 @@ import math
 from collections import defaultdict
 
 import matplotlib.pyplot as plt
-import pandas as pd
 from tqdm import tqdm
 
 from multilingual.analyze_snr_variants import assign_language, benchmark_family
 from snr.constants import PLOT_DIR
 from snr.download.apertus import load_apertus_eval_results
-from snr.snr_simple import main
-from snr.plot import plot_snr_da_grid
 from analysis.plotting.datadecide import plot_task_curves
 
 SMALL_SIZES = ["175M", "350M", "600M"]
@@ -34,18 +34,6 @@ PLOTTED_MIXES = ["fwEdu30", "fwEdu60", "fwEdu90"]
 COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c"]
 SEED = 1904
 OUT_DIR = PLOT_DIR
-
-
-def _results_to_per_task_df(results, sizes_for_da, sizes_for_snr):
-    rows = []
-    for r in results:
-        row = {"task": r["Task"]}
-        for s in sizes_for_da:
-            row[f"decision_acc_{s}"] = r["Decision Accuracy"].get(s, float("nan"))
-        for s in sizes_for_snr:
-            row[f"snr_{s}"] = r["SNR"].get(s, float("nan"))
-        rows.append(row)
-    return pd.DataFrame(rows).set_index("task")
 
 
 def _draw_task(ax, df, task, task_idx, all_sizes):
@@ -74,7 +62,6 @@ def _plot_grid(df, group_label, tasks, subplot_titles, out_path, all_sizes, ncol
             drawn += 1
         except Exception:
             ax.set_visible(False)
-    # Hide unused cells.
     for idx in range(n, nrows * ncols):
         axes[idx // ncols][idx % ncols].set_visible(False)
     if drawn == 0:
@@ -126,29 +113,11 @@ def run():
     print(f"Loaded {len(df):,} rows | {df['model'].nunique()} models | {len(tasks)} tasks")
 
     all_sizes = SMALL_SIZES + [TARGET_SIZE]
-    results = main(
-        df=df, tasks=tasks,
-        small_sizes=SMALL_SIZES,
-        large_sizes_scaling=[],
-        large_sizes_snr=[TARGET_SIZE],
-        target_size=TARGET_SIZE,
-        target_step=None,
-    )
-
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    per_task = _results_to_per_task_df(results, SMALL_SIZES, all_sizes)
-    csv_path = OUT_DIR / "snr_per_task.csv"
-    per_task.sort_index().to_csv(csv_path)
-
     n_bench, n_lang = _plot_grouped_curves(df, tasks, all_sizes, OUT_DIR / "acc_vs_flops")
 
-    grid_path = OUT_DIR / "snr_vs_decision_accuracy.png"
-    plot_snr_da_grid(per_task, SMALL_SIZES, TARGET_SIZE, grid_path)
-
-    print(f"\nWrote table CSV → {csv_path}")
-    print(f"Wrote {n_bench} per-benchmark grids → {OUT_DIR / 'acc_vs_flops' / 'per_benchmark'}")
+    print(f"\nWrote {n_bench} per-benchmark grids → {OUT_DIR / 'acc_vs_flops' / 'per_benchmark'}")
     print(f"Wrote {n_lang} per-language grids → {OUT_DIR / 'acc_vs_flops' / 'per_language'}")
-    print(f"Wrote SNR vs decision-accuracy scatter → {grid_path}")
 
 
 if __name__ == "__main__":
