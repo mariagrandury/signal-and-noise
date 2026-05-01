@@ -34,20 +34,28 @@ That single entry point:
 4. Writes outputs under `results/` (the fork's repurposed `PLOT_DIR`):
    - `snr_per_task.csv` — one row per task with `decision_acc_<size>` /
      `snr_<size>` columns
-   - `acc_vs_flops/<task>.png` — per-task training-curve plots, one panel
-     per mix, generated via `analysis.plotting.datadecide.plot_task_curves`
-   - `snr_vs_decision_accuracy.png` — multi-panel scatter, one panel per
-     small size (175M/350M/600M → 1B), via `snr.plot.plot_snr_da_grid`
+   - `acc_vs_flops/per_benchmark/<family>.png` — one figure per benchmark
+     family with subplots per language; built from
+     `analysis.plotting.datadecide.plot_task_curves`
+   - `acc_vs_flops/per_language/<lang>.png` — one figure per language
+     with subplots per benchmark family
+   - `snr_vs_decision_accuracy.png` — multi-panel scatter (one panel per
+     small size, 175M/350M/600M → 1B), via `snr.plot.plot_snr_da_grid`
+
+The two `acc_vs_flops/` views render the same per-task panels grouped two
+ways, so re-running the pipeline produces both at once.
 
 `multilingual/run_apertus_snr_variants.py` is a sibling entry point that
-emits `snr_variants_per_task.csv` into the same dir, with one column per
-(variant, size) using every aggregator in
+writes `results/snr_definition/snr_variants_per_task.csv`, with one
+column per (variant, size) using every aggregator in
 [snr/snr_variants.py](snr/snr_variants.py)'s `AGGREGATION_FUNCTIONS`.
 
-`multilingual/analyze_snr_variants.py` reads `snr_variants_per_task.csv`
-and writes the four `snr_variant_*.csv` summary tables (per-language
-best benchmark, per-language best variant, variant-vs-decision-accuracy
-R², per-language best variant by R²).
+`multilingual/analyze_snr_variants.py` reads that CSV and renders
+`results/snr_definition/snr_vs_decision_accuracy.png` (one row of
+size-panels per SNR variant, ordered top-to-bottom by overall R² with
+decision accuracy) plus per-language counterparts
+`snr_vs_decision_accuracy_<lang>.png`. No CSVs are emitted by the
+analysis step — the per-task CSV is the only persisted table.
 
 ---
 
@@ -141,16 +149,18 @@ unlike `img/` which is gitignored. Existing artifacts there are
 overwritten on each run.
 
 - `snr_per_task.csv` is the table version of the upstream Rich-print.
-- `snr_variants_per_task.csv` is the wide-format counterpart from
-  `run_apertus_snr_variants.py`: one column per (variant, size) for
-  every aggregator in `AGGREGATION_FUNCTIONS`.
-- `snr_variant_*.csv` are the summary tables emitted by
-  `analyze_snr_variants.py`.
-- `acc_vs_flops/` contains one PNG per task that has enough
-  `(size, mix)` coverage to render. Tasks with incomplete coverage are
-  silently skipped (the loop in `_plot_curves` swallows exceptions and
-  logs nothing — if you expect a task to be there and it isn't, that's
-  why).
+- `snr_definition/snr_variants_per_task.csv` is the wide-format
+  counterpart from `run_apertus_snr_variants.py`: one column per
+  (variant, size) for every aggregator in `AGGREGATION_FUNCTIONS`.
+- `snr_definition/snr_vs_decision_accuracy.png` and
+  `snr_definition/snr_vs_decision_accuracy_<lang>.png` are the variant×
+  size scatter grids emitted by `analyze_snr_variants.py`.
+- `acc_vs_flops/per_benchmark/` and `acc_vs_flops/per_language/`
+  contain combined-grid PNGs (subplots per language and per benchmark
+  family respectively). Tasks with incomplete `(size, mix)` coverage are
+  silently skipped within a grid (the per-subplot try/except in
+  `_plot_grid` swallows the exception — if you expect a task panel and
+  it isn't drawn, that's why).
 - `snr_vs_decision_accuracy.png` is a 1×3 grid (175M / 350M / 600M → 1B).
 
 ---

@@ -29,7 +29,7 @@ SMALL_SIZES = ["175M", "350M", "600M"]
 TARGET_SIZE = "1B"
 ALL_SIZES = SMALL_SIZES + [TARGET_SIZE]
 LAST_N = 5
-OUT_DIR = PLOT_DIR
+OUT_DIR = PLOT_DIR / "snr_definition"
 
 
 def _safe(fn, *args, **kwargs):

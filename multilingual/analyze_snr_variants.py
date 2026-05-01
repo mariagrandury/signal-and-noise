@@ -1,10 +1,12 @@
-"""Analyze the per-task SNR-variant CSV produced by run_apertus_snr_variants.py.
+"""Render SNR-vs-decision-accuracy scatter grids from snr_variants_per_task.csv.
 
-Answers:
-  1. Per language: which benchmark has the highest SNR, under which variant?
-  2. Across the whole table: which SNR variant correlates best with
-     decision accuracy (R^2 of log10(SNR) vs decision_acc, pooled across
-     small sizes 175M/350M/600M and tasks)?
+For every SNR variant in `snr.snr_variants.AGGREGATION_FUNCTIONS`, render a
+row of scatter panels (one column per small size, 175M/350M/600M → 1B) and
+stack the rows top-to-bottom in descending order of R² with decision accuracy.
+
+Outputs:
+  results/snr_definition/snr_vs_decision_accuracy.png      — all benchmarks
+  results/snr_definition/snr_vs_decision_accuracy_<lang>.png  — per-language
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import re
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -21,8 +24,9 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from snr.constants import PLOT_DIR
+from snr.plot import config_snr_ax, plot_snr_scatter
 
-OUT_DIR = PLOT_DIR
+OUT_DIR = PLOT_DIR / "snr_definition"
 CSV_PATH = OUT_DIR / "snr_variants_per_task.csv"
 SMALL_SIZES = ["175M", "350M", "600M"]
 SIZES = SMALL_SIZES + ["1B"]
@@ -100,66 +104,6 @@ def snr_col(variant: str, size: str) -> str:
 
 # --- analyses ---------------------------------------------------------------
 
-def per_language_best(df: pd.DataFrame, variants: list[str]) -> pd.DataFrame:
-    """For each (language, size): the (task, variant, snr) with the max SNR."""
-    df = df.copy()
-    df["language"] = [assign_language(t) for t in df.index]
-    df["family"] = [benchmark_family(t) for t in df.index]
-
-    rows = []
-    for lang, sub in df.groupby("language"):
-        for size in SIZES:
-            best = {"language": lang, "size": size, "task": None,
-                    "family": None, "variant": None, "snr": np.nan}
-            for variant in variants:
-                col = snr_col(variant, size)
-                if col not in sub.columns:
-                    continue
-                vals = sub[col]
-                vals = vals[np.isfinite(vals)]
-                if vals.empty:
-                    continue
-                idx = vals.idxmax()
-                v = vals.loc[idx]
-                if not np.isfinite(best["snr"]) or v > best["snr"]:
-                    best.update(
-                        task=idx, family=sub.loc[idx, "family"],
-                        variant=variant, snr=float(v),
-                    )
-            rows.append(best)
-    return pd.DataFrame(rows)
-
-
-def per_language_best_variant_summary(df: pd.DataFrame, variants: list[str]) -> pd.DataFrame:
-    """For each language, pick the variant whose mean-across-tasks SNR (averaged
-    over small sizes) is highest. Provides a 'this variant separates mixes most
-    consistently for this language' view, complementing the per-task max above."""
-    df = df.copy()
-    df["language"] = [assign_language(t) for t in df.index]
-    rows = []
-    for lang, sub in df.groupby("language"):
-        scores = {}
-        for variant in variants:
-            cols = [snr_col(variant, s) for s in SMALL_SIZES if snr_col(variant, s) in sub.columns]
-            if not cols:
-                continue
-            vals = sub[cols].to_numpy().ravel()
-            vals = vals[np.isfinite(vals)]
-            if vals.size == 0:
-                continue
-            scores[variant] = float(np.mean(vals))
-        if not scores:
-            continue
-        best_variant = max(scores, key=scores.get)
-        rows.append({
-            "language": lang,
-            "best_mean_variant": best_variant,
-            "mean_snr": scores[best_variant],
-            "n_tasks": int(sub.shape[0]),
-        })
-    return pd.DataFrame(rows).sort_values("mean_snr", ascending=False)
-
-
 def variant_decision_acc_correlation(df: pd.DataFrame, variants: list[str]) -> pd.DataFrame:
     """For each variant, compute R^2 between log10(SNR) and decision_acc,
     pooled across (task, small_size) pairs (matches the analysis in
@@ -196,25 +140,50 @@ def variant_decision_acc_correlation(df: pd.DataFrame, variants: list[str]) -> p
     return pd.DataFrame(rows).sort_values("r2", ascending=False)
 
 
-def per_language_correlation(df: pd.DataFrame, variants: list[str]) -> pd.DataFrame:
-    """Best variant by R^2(SNR, decision_acc) within each language."""
-    df = df.copy()
-    df["language"] = [assign_language(t) for t in df.index]
-    out = []
-    for lang, sub in df.groupby("language"):
-        sub_no_lang = sub.drop(columns=["language"])
-        corr = variant_decision_acc_correlation(sub_no_lang, variants)
-        if corr.empty:
-            continue
-        top = corr.iloc[0].to_dict()
-        out.append({
-            "language": lang, "n_tasks": int(sub.shape[0]),
-            "best_variant_by_r2": top["variant"],
-            "r2": top["r2"],
-            "pearson_r": top["pearson_r"],
-            "spearman_r": top["spearman_r"],
-        })
-    return pd.DataFrame(out).sort_values("r2", ascending=False)
+# --- plotting ---------------------------------------------------------------
+
+def _ranked_variants(df: pd.DataFrame, variants: list[str]) -> list[tuple[str, float]]:
+    corr = variant_decision_acc_correlation(df, variants)
+    return [(row["variant"], row["r2"]) for _, row in corr.iterrows()]
+
+
+def render_grid(df: pd.DataFrame, variants_ranked: list[tuple[str, float]],
+                save_path: Path, title: str) -> bool:
+    """Stack one row of (size) scatter panels per SNR variant; rows ordered by R²."""
+    n_rows = len(variants_ranked)
+    n_cols = len(SMALL_SIZES)
+    if n_rows == 0:
+        return False
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(5.5 * n_cols, 4 * n_rows), squeeze=False,
+    )
+    for r, (variant, r2) in enumerate(variants_ranked):
+        for c, size in enumerate(SMALL_SIZES):
+            ax = axes[r][c]
+            snr_c = snr_col(variant, size)
+            da_c = f"decision_acc_{size}"
+            if snr_c not in df.columns or da_c not in df.columns:
+                ax.set_visible(False)
+                continue
+            sub = df[[snr_c, da_c]].dropna()
+            sub = sub[sub[snr_c] > 0]
+            if sub.empty:
+                ax.set_visible(False)
+                continue
+            x = sub[snr_c].to_numpy()
+            y = sub[da_c].to_numpy()
+            texts = plot_snr_scatter(ax, x, y, sub.index.tolist(),
+                                     size=size, task_names={})
+            plot_fit = len(sub) >= 3
+            config_snr_ax(ax, x, y, texts, xlabel=f"SNR {variant} ({size})",
+                          plot_fit=plot_fit, log_scale=True)
+            r2_label = "" if not np.isfinite(r2) else f"  (overall R²={r2:.3f})"
+            ax.set_title(f"{variant} — {size}{r2_label} (n={len(sub)})", fontsize=10)
+    fig.suptitle(title, fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.995))
+    fig.savefig(save_path, dpi=120)
+    plt.close(fig)
+    return True
 
 
 # --- driver -----------------------------------------------------------------
@@ -226,46 +195,29 @@ def main():
           f"({len(variants)} variants × {len(SIZES)} sizes "
           f"+ {len(SMALL_SIZES)} decision-acc columns)\n")
 
-    languages = sorted({assign_language(t) for t in df.index})
-    print("Tasks per language:")
-    lang_counts = pd.Series([assign_language(t) for t in df.index]).value_counts()
-    print(lang_counts.to_string(), "\n")
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1a) For each (language, size), the single highest SNR cell.
-    best = per_language_best(df, variants)
-    best_pivot_tasks = best.pivot(index="language", columns="size", values="task")
-    best_pivot_variants = best.pivot(index="language", columns="size", values="variant")
-    best_pivot_snr = best.pivot(index="language", columns="size", values="snr")
-    print("=== Highest-SNR benchmark per language and size ===")
-    print("(task)")
-    print(best_pivot_tasks[SIZES].to_string(), "\n")
-    print("(variant)")
-    print(best_pivot_variants[SIZES].to_string(), "\n")
-    print("(SNR value)")
-    print(best_pivot_snr[SIZES].round(2).to_string(), "\n")
+    # Global figure: all benchmarks, variants ordered by overall R².
+    ranked = _ranked_variants(df, variants)
+    render_grid(df, ranked, OUT_DIR / "snr_vs_decision_accuracy.png",
+                title="SNR vs decision accuracy — all benchmarks "
+                      "(variants ordered by R²)")
+    print(f"Wrote → {OUT_DIR / 'snr_vs_decision_accuracy.png'}")
 
-    # 1b) Per-language summary: variant whose average SNR-across-tasks is highest.
-    summary = per_language_best_variant_summary(df, variants)
-    print("=== Per language: variant with highest mean SNR (avg over small sizes & tasks) ===")
-    print(summary.to_string(index=False), "\n")
-
-    # 2a) Global ranking of variants by R^2 with decision accuracy.
-    corr = variant_decision_acc_correlation(df, variants)
-    print("=== Variants ranked by R² of log10(SNR) vs decision accuracy "
-          "(pooled across tasks × {175M,350M,600M}) ===")
-    print(corr.to_string(index=False), "\n")
-
-    # 2b) Per-language: best variant by R^2.
-    corr_per_lang = per_language_correlation(df, variants)
-    print("=== Per language: best variant by R² with decision accuracy ===")
-    print(corr_per_lang.to_string(index=False), "\n")
-
-    # Persist tables.
-    best.to_csv(OUT_DIR / "snr_variant_per_language_best.csv", index=False)
-    summary.to_csv(OUT_DIR / "snr_variant_per_language_best_variant.csv", index=False)
-    corr.to_csv(OUT_DIR / "snr_variant_vs_decision_acc.csv", index=False)
-    corr_per_lang.to_csv(OUT_DIR / "snr_variant_per_language_best_variant_by_r2.csv", index=False)
-    print(f"Wrote 4 analysis CSVs to {OUT_DIR}")
+    # Per-language figures.
+    df_lang = df.copy()
+    df_lang["language"] = [assign_language(t) for t in df_lang.index]
+    for lang, sub in sorted(df_lang.groupby("language")):
+        sub = sub.drop(columns=["language"])
+        if len(sub) < 2:
+            continue
+        ranked_lang = _ranked_variants(sub, variants)
+        path = OUT_DIR / f"snr_vs_decision_accuracy_{lang}.png"
+        ok = render_grid(sub, ranked_lang, path,
+                         title=f"SNR vs decision accuracy — {lang} "
+                               f"({len(sub)} benchmarks; variants ordered by R²)")
+        if ok:
+            print(f"Wrote → {path}")
 
 
 if __name__ == "__main__":
