@@ -6,7 +6,6 @@ __pycache__/
 *.egg-info
 *.pdf
 *.pkl
-*.png
 analysis/data
 blog.ipynb
 data/

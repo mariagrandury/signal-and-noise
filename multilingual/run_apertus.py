@@ -29,7 +29,7 @@ TARGET_SIZE = "1B"
 PLOTTED_MIXES = ["fwEdu30", "fwEdu60", "fwEdu90"]
 COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c"]
 SEED = 1904
-OUT_DIR = PLOT_DIR / "apertus_multilingual"
+OUT_DIR = PLOT_DIR
 
 
 def _results_to_per_task_df(results, sizes_for_da, sizes_for_snr):
@@ -89,13 +89,13 @@ def run():
     csv_path = OUT_DIR / "snr_per_task.csv"
     per_task.sort_index().to_csv(csv_path)
 
-    n_plotted = _plot_curves(df, tasks, all_sizes, OUT_DIR / "curves")
+    n_plotted = _plot_curves(df, tasks, all_sizes, OUT_DIR / "acc_vs_flops")
 
     grid_path = OUT_DIR / "snr_vs_decision_accuracy.png"
     plot_snr_da_grid(per_task, SMALL_SIZES, TARGET_SIZE, grid_path)
 
     print(f"\nWrote table CSV → {csv_path}")
-    print(f"Wrote {n_plotted}/{len(tasks)} per-task curve PNGs → {OUT_DIR / 'curves'}")
+    print(f"Wrote {n_plotted}/{len(tasks)} per-task curve PNGs → {OUT_DIR / 'acc_vs_flops'}")
     print(f"Wrote SNR vs decision-accuracy scatter → {grid_path}")
 
 

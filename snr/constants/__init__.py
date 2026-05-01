@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.parent.parent
 DATA_DIR = Path(os.environ.get('SNR_DATA_DIR', ROOT_DIR / 'analysis' / 'data'))
-PLOT_DIR = ROOT_DIR / 'img'
+PLOT_DIR = ROOT_DIR / 'results'
 
 # Create directories if they don't exist
 os.makedirs(DATA_DIR, exist_ok=True)
