@@ -774,3 +774,26 @@ def config_snr_ax(ax, x_vals, y_vals, texts, xlabel, plot_fit=False, log_scale=F
     ax.set_ylabel("Decision Accuracy", fontsize=12)
     ax.grid(True, linestyle="--", alpha=0.3, which="both")
     # adjustText(ax, texts)
+
+
+def plot_snr_da_grid(per_task_df, sizes, target_size, save_path, task_names=None):
+    """Multi-panel SNR vs decision-accuracy scatter — one panel per small size.
+
+    Expects ``per_task_df`` indexed by task with columns ``snr_<size>`` and
+    ``decision_acc_<size>`` for each ``size`` in ``sizes``. Reuses
+    ``plot_snr_scatter`` + ``config_snr_ax`` for per-panel rendering.
+    """
+    fig, axes = plt.subplots(1, len(sizes), figsize=(5.5 * len(sizes), 5), squeeze=False)
+    for ax, size in zip(axes[0], sizes):
+        sub = per_task_df[[f"snr_{size}", f"decision_acc_{size}"]].dropna()
+        x = sub[f"snr_{size}"].to_numpy()
+        y = sub[f"decision_acc_{size}"].to_numpy()
+        texts = plot_snr_scatter(ax, x, y, sub.index.tolist(), size=size,
+                                 task_names=task_names or {})
+        config_snr_ax(ax, x, y, texts, xlabel=f"SNR ({size})",
+                      plot_fit=True, log_scale=True)
+        ax.set_title(f"{size} → {target_size} (n={len(sub)})")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+    return save_path

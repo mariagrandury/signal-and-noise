@@ -8,18 +8,28 @@ from tqdm import tqdm
 from snr.download.hf import pull_predictions_from_hf
 from snr.dataloader import get_slice
 from snr.metrics import decision_acc_fast
-from snr.ladder_wrapper import run_ladder
 from snr.metrics import signal_to_noise_ratio
-from snr.constants.ladder import LADDER_MODEL_NAMES
 from snr.constants.signal import SNR_MODELS
 
 
-def compute_decision_accuracy(df, task, small_size):
+DEFAULT_TASKS = [
+    "minerva", "mmlu", "agi_eval", "arc_challenge", "arc_easy", "boolq",
+    "csqa", "hellaswag", "openbookqa", "piqa", "socialiqa", "winogrande",
+    "gsm8k", "mbpp", "mbppplus", "codex_humaneval", "codex_humanevalplus",
+    "autobencher", "gsm_plus", "gsm_symbolic_main", "gsm_symbolic_p1",
+    "gsm_symbolic_p2", "medmcqa", "minerva_math_500",
+]
+
+
+def compute_decision_accuracy(df, task, small_size, target_size="1B", target_step=69369):
     scores_small = get_slice(df, size=small_size, task=task)
-    scores_target = get_slice(df, size="1B", task=task, step=69369)
+    scores_target = get_slice(df, size=target_size, task=task, step=target_step)
 
     # Get the score at the highest step for each mix
     scores_small = scores_small.loc[scores_small.groupby("mix")["step"].idxmax()]
+    if target_step is None:
+        # No fixed target step → take the latest available step per mix.
+        scores_target = scores_target.loc[scores_target.groupby("mix")["step"].idxmax()]
 
     decision_acc = decision_acc_fast(
         scores_small=scores_small.sort_values("model")["primary_score"],
@@ -30,6 +40,11 @@ def compute_decision_accuracy(df, task, small_size):
 
 
 def compute_scaling_law_error(df, task, large_size):
+    # Lazy-import: the ladder wrapper pulls in olmo-ladder ('scaling', 'fitting'),
+    # which isn't always installed (e.g., the multilingual Apertus path doesn't need it).
+    from snr.ladder_wrapper import run_ladder
+    from snr.constants.ladder import LADDER_MODEL_NAMES
+
     if large_size == "7B":
         target_model = "peteish7"
     elif large_size == "13B":
@@ -45,13 +60,16 @@ def compute_scaling_law_error(df, task, large_size):
 def compute_snr_small_scale(df, task, small_size):
     scores_df = get_slice(df, size=small_size, task=task).sort_values("step")
 
-    # numpy array of final 5 scores in shape (mix, checkpoint)
-    scores_arr = np.array(
-        [lst[-5:] for lst in scores_df.groupby("mix")["primary_score"].apply(list)]
-    )
+    # Last 5 scores per mix. Half-trained models can have <5 ckpts on some mixes,
+    # so we keep them as a list of (possibly unequal-length) 1-D arrays rather than
+    # forcing a 2-D ndarray (which would raise on jagged input).
+    scores_arrays = [
+        np.array(lst[-5:])
+        for lst in scores_df.groupby("mix")["primary_score"].apply(list)
+    ]
 
-    signal = [np.mean(scores) for scores in scores_arr]
-    noise = scores_arr.flatten()
+    signal = [arr.mean() for arr in scores_arrays]
+    noise = np.concatenate(scores_arrays)
 
     snr = signal_to_noise_ratio(signal, noise)
 
@@ -87,37 +105,38 @@ def compute_snr_large_scale(df, task, large_size):
     return snr
 
 
-def calculate_results(df, tasks, small_sizes, large_sizes_scaling, large_sizes_snr):
+def _safe(fn, *args, **kwargs):
+    """Run fn → NaN on failure, so missing-data cells don't kill the loop."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        return float("nan")
+
+
+def calculate_results(df, tasks, small_sizes, large_sizes_scaling, large_sizes_snr,
+                     target_size="1B", target_step=69369):
     results = []
-
     for task in tqdm(tasks, desc="Running analysis"):
-        row = {"Task": task}
+        row = {"Task": task,
+               "Decision Accuracy": {},
+               "Scaling Law Error": {},
+               "SNR": {}}
 
-        # Decision Accuracy
-        decision_acc_group = {}
         for small_size in small_sizes:
-            decision_acc = compute_decision_accuracy(df, task, small_size)
-            decision_acc_group[small_size] = decision_acc
-        row["Decision Accuracy"] = decision_acc_group
+            row["Decision Accuracy"][small_size] = _safe(
+                compute_decision_accuracy, df, task, small_size,
+                target_size=target_size, target_step=target_step,
+            )
 
-        # Scaling Law Error
-        scaling_law_group = {}
         for large_size in large_sizes_scaling:
-            scaling_law_error = compute_scaling_law_error(df, task, large_size)
-            scaling_law_group[large_size] = scaling_law_error
-        row["Scaling Law Error"] = scaling_law_group
+            row["Scaling Law Error"][large_size] = _safe(
+                compute_scaling_law_error, df, task, large_size,
+            )
 
-        # Small scale SNR
-        snr_group = {}
-        for small_size in small_sizes:
-            snr_small = compute_snr_small_scale(df, task, small_size)
-            snr_group[small_size] = snr_small
-        
-        # Large scale SNR
+        for size in small_sizes:
+            row["SNR"][size] = _safe(compute_snr_small_scale, df, task, size)
         for large_size in large_sizes_snr:
-            snr_large = compute_snr_large_scale(df, task, large_size)
-            snr_group[large_size] = snr_large
-        row["SNR"] = snr_group
+            row["SNR"][large_size] = _safe(compute_snr_large_scale, df, task, large_size)
 
         results.append(row)
     return results
@@ -129,7 +148,7 @@ def render_table(results, small_sizes, large_sizes_scaling, large_sizes_snr):
     # Add header
     decision_acc_headers = [f"{size}" for size in small_sizes]
     scaling_law_headers = [f"{size}" for size in large_sizes_scaling]
-    snr_headers = [f"{size}" for size in small_sizes + large_sizes_snr]
+    snr_headers = [f"{size}" for size in list(small_sizes) + list(large_sizes_snr)]
     table.add_column("Task", justify="left")
     for size in decision_acc_headers:
         table.add_column(f"Decision\nAcc\n{size}", justify="left")
@@ -147,48 +166,57 @@ def render_table(results, small_sizes, large_sizes_scaling, large_sizes_snr):
 
         for size in decision_acc_headers:
             val = row["Decision Accuracy"].get(size, "")
-            if isinstance(val, float):
+            if isinstance(val, float) and np.isfinite(val):
                 row_values.append(f"{int(round(val * 100))}%")
             else:
-                row_values.append(str(val))
+                row_values.append("-" if isinstance(val, float) else str(val))
 
         for size in scaling_law_headers:
             val = row["Scaling Law Error"].get(size, "")
-            if isinstance(val, float):
+            if isinstance(val, float) and np.isfinite(val):
                 row_values.append(f"{val * 100:.1f}%")
             else:
-                row_values.append(str(val))
+                row_values.append("-" if isinstance(val, float) else str(val))
 
         for size in snr_headers:
             val = row["SNR"].get(size, "")
-            if isinstance(val, float):
+            if isinstance(val, float) and np.isfinite(val):
                 row_values.append(f"{val:.1f}")
             else:
-                row_values.append(str(val))
+                row_values.append("-" if isinstance(val, float) else str(val))
         table.add_row(*row_values)
 
     console = Console()
     console.print(table)
 
 
-def main():
-    local_path = pull_predictions_from_hf("allenai/signal-and-noise", split_name="core")
-    df = pd.read_parquet(local_path)
+def main(
+    df=None,
+    tasks=None,
+    small_sizes=("150M", "300M", "750M"),
+    large_sizes_scaling=("7B", "13B"),
+    large_sizes_snr=("1B", "7B", "13B", "32B"),
+    target_size="1B",
+    target_step=69369,
+):
+    """Drive the analysis. Defaults reproduce the DataDecide pipeline; pass a
+    pre-loaded df + custom sizes to run on other model families (e.g. Apertus)."""
+    if df is None:
+        local_path = pull_predictions_from_hf("allenai/signal-and-noise", split_name="core")
+        df = pd.read_parquet(local_path)
+    if tasks is None:
+        tasks = DEFAULT_TASKS
 
-    tasks = [
-        "minerva", "mmlu", "agi_eval", "arc_challenge", "arc_easy", "boolq", 
-        "csqa", "hellaswag", "openbookqa", "piqa", "socialiqa", "winogrande", 
-        "gsm8k", "mbpp", "mbppplus", "codex_humaneval", "codex_humanevalplus", 
-        "autobencher", "gsm_plus", "gsm_symbolic_main", "gsm_symbolic_p1", 
-        "gsm_symbolic_p2", "medmcqa", "minerva_math_500",
-    ]
+    small_sizes = list(small_sizes)
+    large_sizes_scaling = list(large_sizes_scaling)
+    large_sizes_snr = list(large_sizes_snr)
 
-    small_sizes = ["150M", "300M", "750M"] # ["4M", "20M", "60M", "90M", "150M", "300M", "530M", "750M"]
-    large_sizes_scaling = ["7B", "13B"]
-    large_sizes_snr = ["1B", "7B", "13B", "32B"]
-
-    results = calculate_results(df, tasks, small_sizes, large_sizes_scaling, large_sizes_snr)
+    results = calculate_results(
+        df, tasks, small_sizes, large_sizes_scaling, large_sizes_snr,
+        target_size=target_size, target_step=target_step,
+    )
     render_table(results, small_sizes, large_sizes_scaling, large_sizes_snr)
+    return results
 
 
 if __name__ == "__main__":
