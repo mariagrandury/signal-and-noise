@@ -145,12 +145,47 @@ def variant_key(func_dict):
     return name[:-4] if name.endswith("_snr") else name
 
 
+# --- variants metadata table ------------------------------------------------
+
+def variants_definitions_df() -> pd.DataFrame:
+    """One row per aggregator describing what its signal/noise/snr mean."""
+    rows = []
+    for fd in AGGREGATION_FUNCTIONS:
+        rows.append({
+            "variant": variant_key(fd),
+            "title": fd["title"],
+            "latex": fd["latex"],
+            "signal_label": fd["signal_xlabel"],
+            "noise_label": fd["noise_xlabel"],
+            "snr_label": fd["snr_xlabel"],
+        })
+    return pd.DataFrame(rows).set_index("variant")
+
+
+def write_variants_definitions(out_dir: Path) -> Path:
+    """Write the metadata table to CSV and print a readable version."""
+    df_def = variants_definitions_df()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "snr_variants_definitions.csv"
+    df_def.to_csv(csv_path)
+    # Readable view (markdown table; falls back to .to_string() if tabulate is missing).
+    try:
+        printable = df_def[["title", "latex", "snr_label"]].to_markdown()
+    except Exception:
+        printable = df_def[["title", "latex", "snr_label"]].to_string()
+    print("\nSNR variant definitions:")
+    print(printable)
+    return csv_path
+
+
 # --- driver -----------------------------------------------------------------
 
 def run():
     df = load_apertus_eval_results()
     tasks = sorted(df["task"].unique())
     print(f"Loaded {len(df):,} rows | {df['model'].nunique()} models | {len(tasks)} tasks")
+
+    write_variants_definitions(OUT_DIR)
 
     rows = []
     for task in tqdm(tasks, desc="Tasks"):

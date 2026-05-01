@@ -15,12 +15,14 @@ agreement) over 3 mixes per (size or ckpt) pair.
 | Path | What it is |
 |---|---|
 | `snr_variants_per_task.csv` | Master table (104 tasks × 279 cols). Per task: signal/noise/snr for each of 22 variants × 4 sizes (264 cols) + 3 size-DA cols (`decision_acc_size_<175M|350M|600M>`) + 12 ckpt-DA cols (`decision_acc_ckpt_<6000|18000|28000>_<size>`). |
+| `snr_variants_definitions.csv` | One row per SNR variant: `title`, LaTeX formula, and the upstream signal/noise/SNR axis labels. Mirrors the table that `multilingual/run_apertus_snr_variants.py` prints when run. |
 | `da_size/snr_vs_decision_accuracy.png` | Variants (rows, ranked by mean Pearson r) × 3 DA-size cols. Each cell: SNR(small_size) vs DA(small_size@last → 1B@last). One color per panel. |
 | `da_size/snr_vs_decision_accuracy_<lang>.png` | Same grid restricted to one language. Languages with too few non-NaN DA cells are skipped (currently de, fr, th). |
 | `da_size/heatmap_pearson_r.png` | (variants × languages) Pearson r between log10(SNR) and DA-size, pooled across the 3 size cols. RdBu, anchored at ±1. |
-| `da_ckpt/snr_vs_decision_accuracy.png` | Same shape as the size grid but cols are `ckpt 6000 → max`, `18000 → max`, `28000 → max`, and each panel pools all 4 sizes (color = size). |
-| `da_ckpt/snr_vs_decision_accuracy_<lang>.png` | Per-language version of the above (ja also skipped here — too few non-NaN ckpt-DA cells). |
-| `da_ckpt/heatmap_pearson_r.png` | (variants × languages) Pearson r vs DA-ckpt. |
+| `da_ckpt/da_ckpt_mix/snr_vs_decision_accuracy.png` | Cross-size pooled DA-ckpt grid: cols are `ckpt 6000 → max`, `18000 → max`, `28000 → max`, and each panel pools all 4 sizes (color = size). |
+| `da_ckpt/da_ckpt_mix/snr_vs_decision_accuracy_<lang>.png` | Per-language version of the above (ja additionally skipped — too few non-NaN ckpt-DA cells). |
+| `da_ckpt/da_ckpt_mix/heatmap_pearson_r.png` | (variants × languages) Pearson r vs DA-ckpt, pooled across all sizes. |
+| `da_ckpt/da_ckpt_<size>/` | One sub-grid per model size (`175M`, `350M`, `600M`, `1B`). Same layout as `da_ckpt_mix/` but each panel restricts to one size (no cross-size pooling, mono-color), so DA correlations don't get smeared by size effects. Each subfolder contains its own `snr_vs_decision_accuracy.png`, per-language plots, and `heatmap_pearson_r.png`. |
 | `variant_correlation_matrix.png` | (22 × 22) Pearson r between log10(SNR) values across variants, pooled over (task × size). Solid red blocks = redundant variants. |
 | `da_size_vs_da_ckpt.png` | One dot per variant: x = mean r vs DA-size, y = mean r vs DA-ckpt. Diagonal = both DA definitions agree on which SNR is best. |
 

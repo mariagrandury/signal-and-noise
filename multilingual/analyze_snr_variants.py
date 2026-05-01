@@ -82,6 +82,15 @@ _ENGLISH_ONLY_TASKS = {
     "openbookqa", "piqa", "truthfulqa_mc1",
 }
 
+# Tasks that should be merged into a single benchmark family even though
+# their names don't share a prefix-up-to-language-token. Keep small and
+# explicit; only ARC's challenge/easy split matches this pattern in the
+# Apertus task list.
+_BENCHMARK_FAMILY_OVERRIDES = {
+    "arc_challenge": "arc",
+    "arc_easy": "arc",
+}
+
 
 def assign_language(task: str) -> str:
     if task in _ENGLISH_ONLY_TASKS:
@@ -95,12 +104,15 @@ def assign_language(task: str) -> str:
 def benchmark_family(task: str) -> str:
     """Strip any language/script suffix, leaving the benchmark identifier.
 
-    No English-only collapse and no trailing-decoration stripping: e.g.
-    ``arc_challenge`` and ``arc_easy`` stay distinct, and English
-    ``truthfulqa_mc1`` does not collapse with the multilingual
-    ``truthfulqa_es_mc1`` (which is Spanish — those should land in a
-    different family).
+    Two explicit overrides via ``_BENCHMARK_FAMILY_OVERRIDES``:
+      - ``arc_challenge`` and ``arc_easy`` collapse to ``arc`` so they
+        end up in the same per-benchmark grid as ``arc_de``/``arc_es``/…
+      - English ``truthfulqa_mc1`` is left alone so it does not collapse
+        with the multilingual ``truthfulqa_<lang>_mc1`` variants (which
+        are Spanish/Russian/etc. — they belong in their own family).
     """
+    if task in _BENCHMARK_FAMILY_OVERRIDES:
+        return _BENCHMARK_FAMILY_OVERRIDES[task]
     parts = task.split("_")
     out = []
     for p in parts:
@@ -148,17 +160,19 @@ def da_size_pairs():
                lambda size, s=s: size == s)
 
 
-def da_ckpt_pairs():
+def da_ckpt_pairs(sizes: list[str] = None):
     """Yield (col_label, snr_size, da_col_for_size, sizes_to_pool) per DA-ckpt col.
 
-    DA-ckpt pools all four sizes into one panel. Each (task, size) cell
-    contributes one dot at x = SNR(variant, size), y = DA(early, size).
+    Pass ``sizes=[one_size]`` to restrict each panel to a single model
+    size (used by the ``da_ckpt/da_ckpt_<size>/`` subfolders); pass the
+    default ``ALL_SIZES`` for the cross-size pooled view.
     """
+    if sizes is None:
+        sizes = ALL_SIZES
     for early in CKPT_DA_EARLY_STEPS:
-        # ``da_col`` is per-size, so we return a callable rather than a fixed col.
         def _da_col(size, early=early):
             return da_ckpt_col(early, size)
-        yield (f"ckpt {early} → max", ALL_SIZES, _da_col,
+        yield (f"ckpt {early} → max", list(sizes), _da_col,
                lambda size: True)
 
 
@@ -283,8 +297,15 @@ def render_grid(df: pd.DataFrame, variants_ranked: list,
     if drawn == 0:
         plt.close(fig)
         return False
-    fig.suptitle(title, fontsize=14)
-    fig.tight_layout(rect=(0, 0, 1, 0.995))
+    # Reserve a fixed strip at the top of the figure for the suptitle so
+    # that with tall figures (e.g. 22 rows × 4 inches) it doesn't end up
+    # inside row 1 — the default y=0.98 is a fraction of figure height,
+    # not a pixel offset.
+    fig_h = fig.get_size_inches()[1]
+    title_strip_in = 0.6
+    title_y = 1 - 0.2 / fig_h  # baseline near the top edge
+    fig.tight_layout(rect=(0, 0, 1, 1 - title_strip_in / fig_h))
+    fig.suptitle(title, fontsize=14, y=title_y, va="top")
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=120)
     plt.close(fig)
@@ -443,21 +464,32 @@ def _draw_da_size_vs_da_ckpt(df: pd.DataFrame, variants: list[str],
 
 # --- driver ----------------------------------------------------------------
 
-_DA_DEFS = [
-    # (subdir, da_kind, da_pairs_factory, color_by_size)
-    ("da_size", "size", da_size_pairs, False),
-    ("da_ckpt", "ckpt", da_ckpt_pairs, True),
+# (subdir, da_kind, da_pairs_factory, color_by_size, label)
+# DA-ckpt has one cross-size pooled view (``da_ckpt/da_ckpt_mix``, color=size)
+# plus one mono-color view per model size. The per-size views remove the
+# cross-size confound; the mix view is kept for cross-size comparison.
+_DA_DEFS: list[tuple] = [
+    ("da_size", "size", lambda: list(da_size_pairs()), False, "all sizes"),
+    ("da_ckpt/da_ckpt_mix", "ckpt", lambda: list(da_ckpt_pairs()), True,
+     "all sizes"),
 ]
+for _s in ALL_SIZES:
+    _DA_DEFS.append((
+        f"da_ckpt/da_ckpt_{_s}", "ckpt",
+        (lambda s=_s: list(da_ckpt_pairs([s]))),
+        False, _s,
+    ))
 
 
 def _render_for_da(df: pd.DataFrame, variants: list[str], subdir: str,
-                   da_kind: str, pairs_factory, color_by_size: bool):
+                   da_kind: str, pairs_factory, color_by_size: bool,
+                   label: str):
     out_dir = OUT_DIR / subdir
     out_dir.mkdir(parents=True, exist_ok=True)
     da_pairs = list(pairs_factory())
 
     ranked = rank_variants(df, variants, da_pairs)
-    title = (f"SNR vs decision accuracy (DA-{da_kind}) — all benchmarks "
+    title = (f"SNR vs decision accuracy (DA-{da_kind}, {label}) — all benchmarks "
              f"(variants ordered by mean Pearson r)")
     if render_grid(df, ranked, da_pairs,
                    out_dir / "snr_vs_decision_accuracy.png", title,
@@ -467,7 +499,7 @@ def _render_for_da(df: pd.DataFrame, variants: list[str], subdir: str,
     # Heatmap of (variant × language) Pearson r.
     table = _per_language_pearson_table(df, variants, da_pairs)
     if _draw_heatmap(table, out_dir / "heatmap_pearson_r.png",
-                     title=f"Pearson r — log10(SNR) vs DA-{da_kind} (per language)"):
+                     title=f"Pearson r — log10(SNR) vs DA-{da_kind} ({label}, per language)"):
         print(f"Wrote → {out_dir / 'heatmap_pearson_r.png'}")
 
     # Per-language grids.
@@ -481,7 +513,7 @@ def _render_for_da(df: pd.DataFrame, variants: list[str], subdir: str,
             continue
         ranked_lang = rank_variants(sub, variants, da_pairs)
         path = out_dir / f"snr_vs_decision_accuracy_{lang}.png"
-        title_l = (f"SNR vs decision accuracy (DA-{da_kind}) — {lang} "
+        title_l = (f"SNR vs decision accuracy (DA-{da_kind}, {label}) — {lang} "
                    f"({len(sub)} benchmarks; variants ordered by mean Pearson r)")
         if render_grid(sub, ranked_lang, da_pairs, path, title_l,
                        color_by_size=color_by_size):
@@ -497,10 +529,10 @@ def main():
           f"({len(variants)} variants × {len(ALL_SIZES)} sizes × 3 stats "
           f"+ {n_size} size-DA + {n_ckpt} ckpt-DA)\n")
 
-    for subdir, da_kind, pairs_factory, color_by_size in _DA_DEFS:
-        print(f"=== DA-{da_kind} → {OUT_DIR / subdir} ===")
+    for subdir, da_kind, pairs_factory, color_by_size, label in _DA_DEFS:
+        print(f"=== DA-{da_kind} ({label}) → {OUT_DIR / subdir} ===")
         _render_for_da(df, variants, subdir, da_kind, pairs_factory,
-                       color_by_size)
+                       color_by_size, label)
         print()
 
     # Variant correlation matrix (pool over all sizes/tasks).
