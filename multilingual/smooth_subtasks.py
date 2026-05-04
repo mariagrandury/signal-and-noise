@@ -47,21 +47,12 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from multilingual.analyze_snr_variants import assign_language, benchmark_family
-from snr.constants import PLOT_DIR
-from snr.download.apertus import (
-    DEFAULT_EVAL_ROOT,
-    _MODEL_RE,
-    _PARAMS,
-    _TOKENS_PER_ITER,
-    load_apertus_eval_results,
+from multilingual.analyze_snr_variants import (
+    _BENCHMARK_FAMILY_OVERRIDES, _LANG_MAP, assign_language, benchmark_family,
 )
+from snr.constants import PLOT_DIR
+from snr.download.apertus import load_apertus_eval_results
 from snr.metrics import signal_to_noise_ratio
-
-# Reuse the swissai-evals collector to surface per-subject scores that
-# aggregate_parents would otherwise fold into a parent task.
-sys.path.insert(0, "/iopsstor/scratch/cscs/mariagrandury/swissai-evals-post-train")
-from scripts.push_all_results import collect  # noqa: E402
 
 # 2-letter language codes used by global_mmlu_full subject keys.
 _GMF_LANGS = ("ar", "en", "es", "hi", "ja", "ru", "sw", "tr", "vi", "zh")
@@ -238,15 +229,48 @@ def _result_row(task_name: str, size: str, sweep: dict) -> dict:
 ### Case 1: per-benchmark (multilingual families) ###
 
 
+def _is_language_aggregate(task: str, family: str) -> bool:
+    """Keep only the per-language aggregate of a family (e.g.,
+    ``global_mmlu_ar``), not the per-(lang, subject) facet
+    (``global_mmlu_ar_business``). The parquet now ships both kinds of
+    keys, so Case 1's "subtask = language" sweep needs this filter or
+    each language counts multiple times.
+
+    A "language aggregate" is a task whose tokens after the family name
+    are: one language token, optionally followed by one short script tag
+    (``Arab``/``Latn``/...) — matching the actual layouts in scope
+    (``arc_de``, ``belebele_arb_Arab``, ``global_mmlu_ar``,
+    ``global_piqa_completions_eng_latn``).
+    """
+    if task in _BENCHMARK_FAMILY_OVERRIDES:
+        return True
+    if not task.startswith(family + "_"):
+        return False
+    rest = task[len(family) + 1:].split("_")
+    if not rest or rest[0] not in _LANG_MAP:
+        return False
+    if len(rest) == 1:
+        return True
+    # Allow exactly one trailing token if it's a known ISO 15924 script tag.
+    _SCRIPTS = {"arab", "latn", "cyrl", "hans", "hant", "deva", "jpan",
+                "thai", "geor", "hebr", "beng", "knda", "tibt", "spai"}
+    if len(rest) == 2 and rest[1].lower() in _SCRIPTS:
+        return True
+    return False
+
+
 def collect_multilingual_families(df: pd.DataFrame) -> dict[str, list[str]]:
     """Group tasks by benchmark_family, keeping only families with >1
-    languages assigned (i.e., genuinely multilingual). Sort tasks in
-    each family by language for stable output."""
+    per-language aggregates (i.e., genuinely multilingual). Sort tasks
+    in each family by language for stable output."""
     families: dict[str, list[str]] = defaultdict(list)
     for t in df["task"].unique():
         if assign_language(t) == "??":
             continue
-        families[benchmark_family(t)].append(t)
+        fam = benchmark_family(t)
+        if not _is_language_aggregate(t, fam):
+            continue
+        families[fam].append(t)
     return {
         f: sorted(ts, key=assign_language)
         for f, ts in families.items()
@@ -304,58 +328,43 @@ def _parse_gmf_lang_subject(task: str) -> tuple[str, str] | None:
     return parts[0], parts[1]
 
 
-def load_gmf_subjects_df(eval_root: Path = DEFAULT_EVAL_ROOT) -> pd.DataFrame:
-    """Walk eval_root and emit per-subject rows for ``global_mmlu_full``,
-    averaged across the 10 languages at each (model, ckpt). The output's
-    ``task`` column carries the subject name (e.g., ``anatomy``).
-    aggregate_parents is bypassed so the per-(lang, subject) keys aren't
-    folded back into the language aggregates.
+def load_gmf_subjects_df(df: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Per-subject rows for ``global_mmlu_full``, averaged across the 10
+    languages at each (model, ckpt). The output's ``task`` column carries
+    the subject name (e.g., ``anatomy``).
+
+    Reads from the per-(lang, subject) keys (``global_mmlu_full_<lang>_<subject>``)
+    that already live in the parquet — no disk walking needed.
     """
-    eval_root = Path(eval_root)
-    rows = []
-    for ckpt_dir in eval_root.iterdir():
-        m = _MODEL_RE.match(ckpt_dir.name)
-        if not m:
+    if df is None:
+        df = load_apertus_eval_results()
+    sub_rows = []
+    for task in df["task"].unique():
+        parsed = _parse_gmf_lang_subject(task)
+        if parsed is None:
             continue
-        size = m["size"]
-        mix = f"fwEdu{m['edu']}"
-        seed = int(m["seed"])
-        step = int(m["iter"])
-        raw = collect(ckpt_dir)
-        if not raw:
-            continue
-        # Subject -> list of per-language scores at this ckpt.
-        per_subject: dict[str, list[float]] = defaultdict(list)
-        for task, scores in raw.items():
-            subject = _parse_gmf_subject(task)
-            if subject is None:
-                continue
-            score = scores.get("acc,none", scores.get("exact_match,none"))
-            if score is None:
-                continue
-            per_subject[subject].append(float(score))
-        if not per_subject:
-            continue
-        tokens = step * _TOKENS_PER_ITER
-        compute = 6 * _PARAMS[size] * tokens
-        for subject, vals in per_subject.items():
-            rows.append(
-                dict(
-                    model=f"apertus-{size}-{mix}",
-                    mix=mix, size=size, step=step, task=subject,
-                    primary_score=float(np.mean(vals)),
-                    n_languages=len(vals),
-                    seed=seed, tokens=tokens, compute=compute,
-                )
-            )
-    df = pd.DataFrame(rows)
-    if df.empty:
-        return df
-    return df.sort_values(["size", "mix", "step", "task"]).reset_index(drop=True)
+        lang, subject = parsed
+        cur = df[df["task"] == task].copy()
+        cur["language"] = lang
+        cur["subject"] = subject
+        sub_rows.append(cur)
+    if not sub_rows:
+        return pd.DataFrame()
+    long = pd.concat(sub_rows, ignore_index=True)
+    grouped = (
+        long.groupby(["model", "mix", "size", "step", "subject"], as_index=False)
+        .agg(primary_score=("primary_score", "mean"),
+             n_languages=("language", "nunique"),
+             seed=("seed", "first"),
+             tokens=("tokens", "first"),
+             compute=("compute", "first"))
+        .rename(columns={"subject": "task"})
+    )
+    return grouped.sort_values(["size", "mix", "step", "task"]).reset_index(drop=True)
 
 
-def run_gmf_subjects(out_dir: Path) -> Path | None:
-    df_gmf = load_gmf_subjects_df()
+def run_gmf_subjects(out_dir: Path, df: pd.DataFrame | None = None) -> Path | None:
+    df_gmf = load_gmf_subjects_df(df)
     if df_gmf.empty:
         print("No global_mmlu_full_<lang>_<subject> rows found — skipping.")
         return None
@@ -392,49 +401,32 @@ def run_gmf_subjects(out_dir: Path) -> Path | None:
 ### Case 3: global_mmlu_full subjects per language (no cross-lang avg) ###
 
 
-def load_gmf_per_language_df(eval_root: Path = DEFAULT_EVAL_ROOT) -> pd.DataFrame:
+def load_gmf_per_language_df(df: pd.DataFrame | None = None) -> pd.DataFrame:
     """Per (model, ckpt, lang, subject) rows for global_mmlu_full. ``task``
-    is the subject; ``language`` is the language code."""
-    eval_root = Path(eval_root)
+    is the subject; ``language`` is the language code.
+
+    Reads the per-(lang, subject) task keys directly from the parquet.
+    """
+    if df is None:
+        df = load_apertus_eval_results()
     rows = []
-    for ckpt_dir in eval_root.iterdir():
-        m = _MODEL_RE.match(ckpt_dir.name)
-        if not m:
+    for task in df["task"].unique():
+        parsed = _parse_gmf_lang_subject(task)
+        if parsed is None:
             continue
-        size = m["size"]
-        mix = f"fwEdu{m['edu']}"
-        seed = int(m["seed"])
-        step = int(m["iter"])
-        raw = collect(ckpt_dir)
-        if not raw:
-            continue
-        tokens = step * _TOKENS_PER_ITER
-        compute = 6 * _PARAMS[size] * tokens
-        for task, scores in raw.items():
-            parsed = _parse_gmf_lang_subject(task)
-            if parsed is None:
-                continue
-            lang, subject = parsed
-            score = scores.get("acc,none", scores.get("exact_match,none"))
-            if score is None:
-                continue
-            rows.append(
-                dict(
-                    model=f"apertus-{size}-{mix}",
-                    mix=mix, size=size, step=step,
-                    task=subject, language=lang,
-                    primary_score=float(score),
-                    seed=seed, tokens=tokens, compute=compute,
-                )
-            )
-    df = pd.DataFrame(rows)
-    if df.empty:
-        return df
-    return df.sort_values(["language", "size", "mix", "step", "task"]).reset_index(drop=True)
+        lang, subject = parsed
+        cur = df[df["task"] == task].copy()
+        cur["language"] = lang
+        cur["task"] = subject
+        rows.append(cur)
+    if not rows:
+        return pd.DataFrame()
+    out = pd.concat(rows, ignore_index=True)
+    return out.sort_values(["language", "size", "mix", "step", "task"]).reset_index(drop=True)
 
 
-def run_gmf_subjects_per_language(out_dir: Path) -> Path | None:
-    df_lang = load_gmf_per_language_df()
+def run_gmf_subjects_per_language(out_dir: Path, df: pd.DataFrame | None = None) -> Path | None:
+    df_lang = load_gmf_per_language_df(df)
     if df_lang.empty:
         print("No global_mmlu_full_<lang>_<subject> rows found — skipping.")
         return None
@@ -468,6 +460,59 @@ def run_gmf_subjects_per_language(out_dir: Path) -> Path | None:
     return csv_path
 
 
+### Post-processing: unified summary across the three cases ###
+
+
+_SUMMARY_COLS = [
+    "case", "task", "size",
+    "full_set_snr", "best_n", "best_snr", "snr_gain",
+    "best_subset_short",
+]
+
+
+def _short_subset(s: str, max_items: int = 4) -> str:
+    if not isinstance(s, str) or not s:
+        return ""
+    parts = s.split("|")
+    if len(parts) <= max_items:
+        return s
+    return "|".join(parts[:max_items]) + f"|… (+{len(parts) - max_items})"
+
+
+def build_summary(out_dir: Path) -> Path:
+    """Read the three case CSVs from ``out_dir`` and emit ``summary.csv``
+    ranking every (case, task, size) by ``snr_gain = best_snr -
+    full_set_snr``. The three CSVs must already exist (run main() or
+    the per-case run_* functions first).
+    """
+    case_files = {
+        "case1_per_benchmark": out_dir / "per_benchmark.csv",
+        "case2_global_mmlu_full_subjects": out_dir / "global_mmlu_full.csv",
+        "case3_global_mmlu_full_per_language": out_dir / "global_mmlu_full_per_language.csv",
+    }
+    frames = []
+    for case, path in case_files.items():
+        if not path.exists():
+            print(f"  skip {case}: {path} not found")
+            continue
+        df = pd.read_csv(path)
+        df = df.assign(
+            case=case,
+            snr_gain=df["best_snr"] - df["full_set_snr"],
+            best_subset_short=df["best_subset"].apply(_short_subset),
+        )
+        frames.append(df[_SUMMARY_COLS])
+    if not frames:
+        print("No case CSVs found — skipping summary.")
+        return out_dir / "summary.csv"
+    summary = pd.concat(frames, ignore_index=True)
+    summary = summary.sort_values("snr_gain", ascending=False, na_position="last")
+    csv_path = out_dir / "summary.csv"
+    summary.to_csv(csv_path, index=False)
+    print(f"Wrote → {csv_path} ({len(summary)} rows)")
+    return csv_path
+
+
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -480,11 +525,14 @@ def main():
 
     print("\n=== Case 2: global_mmlu_full subjects "
           "(task = global_mmlu_full, subtask = subject) ===")
-    run_gmf_subjects(OUT_DIR)
+    run_gmf_subjects(OUT_DIR, df=df)
 
     print("\n=== Case 3: global_mmlu_full subjects per language "
           "(task = global_mmlu_full_<lang>, subtask = subject) ===")
-    run_gmf_subjects_per_language(OUT_DIR)
+    run_gmf_subjects_per_language(OUT_DIR, df=df)
+
+    print("\n=== Summary: snr_gain ranking across cases ===")
+    build_summary(OUT_DIR)
 
 
 if __name__ == "__main__":

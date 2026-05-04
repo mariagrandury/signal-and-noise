@@ -1,76 +1,113 @@
-"""Load eval results for the 12 custom Apertus pretraining models from disk.
+"""Load eval results for the Apertus / reference-HF runs from local parquet.
 
-Models: apertus-{175M,350M,600M,1B}-fwEdu{30,60,90}-fw{270,240,210}-seed1904
-Layout: <EVAL_ROOT>/<model>-iter<N>/harness/eval_*/results_*.json
+The `multilingual-snr/multilingual-snr-eval-results` HuggingFace dataset
+ships two parquet splits already in the schema expected by
+`snr.dataloader.get_slice`:
+
+  - data/pretraining_custom-*.parquet   (12 Apertus pretrained models;
+        sizes 175M/350M/600M/1B; mixes fwEdu30/60/90; seed 1904; 13 ckpts)
+  - data/reference_hf-*.parquet         (external HF reference models:
+        SmolLM3-3B (incl. step-checkpoints), Olmo-3-7B, Apertus-8B)
+
+The cluster-walking implementation that used to live here has been
+superseded by these tables — every value the parser used to derive
+(``model``, ``mix``, ``size``, ``step``, ``primary_score``, ``tokens``,
+``compute``) is already a column.
+
+Mix names in the parquet keep the full ``fwEduX-fwY`` form. The rest of
+the pipeline (run_apertus.py, analyze_snr_variants.py, smooth_subtasks*)
+only ever uses the FW-Edu ratio, so we strip the ``-fwY`` complement on
+load to match the historical short form (``fwEdu30``).
 """
 
 from __future__ import annotations
 
-import re
-import sys
+import os
 from pathlib import Path
 
 import pandas as pd
 
-# Reuse the on-disk parser already maintained for the W&B push pipeline
-# (swissai-evals-post-train) rather than reimplementing it here.
-_SWISSAI = "/iopsstor/scratch/cscs/mariagrandury/swissai-evals-post-train"
-if _SWISSAI not in sys.path:
-    sys.path.insert(0, _SWISSAI)
-from scripts.push_all_results import collect, aggregate_parents  # noqa: E402
+from snr.constants import DATA_DIR
 
+DEFAULT_DATA_DIR = Path(
+    os.environ.get("SNR_MULTILINGUAL_DATA_DIR", DATA_DIR / "multilingual_snr" / "data")
+)
+PRETRAIN_PARQUET = "pretraining_custom-00000-of-00001.parquet"
+REFERENCE_PARQUET = "reference_hf-00000-of-00001.parquet"
+
+# Backwards-compat aliases used by smooth_subtasks_per_sample.py (which
+# still scans samples_*.jsonl — that path only works on the cluster).
 DEFAULT_EVAL_ROOT = Path(
     "/iopsstor/scratch/cscs/mariagrandury/data-mix-small/Megatron-LM/logs/eval_logs/"
     "mariagrandury-epflnlp/snr-experiments"
 )
+_PARAMS = {"175M": 175e6, "350M": 350e6, "600M": 600e6, "1B": 1.0e9}
+_TOKENS_PER_ITER = 504 * 4096
 
+# Match historical regex (still used by per-sample script when run on the
+# cluster).
+import re  # noqa: E402
 _MODEL_RE = re.compile(
     r"^apertus-(?P<size>175M|350M|600M|1B)-fwEdu(?P<edu>30|60|90)-fw(?P<fw>270|240|210)-seed(?P<seed>\d+)-iter(?P<iter>\d+)$"
 )
 
-# Approximate non-embedding parameter counts (used to compute FLOPs ≈ 6·params·tokens).
-_PARAMS = {"175M": 175e6, "350M": 350e6, "600M": 600e6, "1B": 1.0e9}
-# Megatron training config: tokens per iter = micro_batch_size * seq_len = 504 * 4096
-_TOKENS_PER_ITER = 504 * 4096
+
+def _normalise_mix(mix: str) -> str:
+    """fwEdu30-fw270 → fwEdu30  (drop the redundant complement)."""
+    if isinstance(mix, str) and "-" in mix:
+        return mix.split("-", 1)[0]
+    return mix
 
 
-def load_apertus_eval_results(eval_root: str | Path = DEFAULT_EVAL_ROOT) -> pd.DataFrame:
-    """Walk eval_root and return one row per (model, ckpt, task) with primary_score.
+def _read_parquet(path: Path) -> pd.DataFrame:
+    df = pd.read_parquet(path)
+    # Schema sanity: keep the columns the SNR pipeline expects, drop the
+    # rest so downstream pivots stay cheap.
+    keep = ["model", "size", "mix", "seed", "step", "task",
+            "primary_score", "model_tokens", "flops"]
+    df = df[[c for c in keep if c in df.columns]].copy()
+    df["mix"] = df["mix"].map(_normalise_mix)
+    df = df.rename(columns={"model_tokens": "tokens", "flops": "compute"})
+    # Coerce numerics — the reference_hf split has NaN seeds.
+    for c in ("step", "primary_score", "tokens", "compute"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    if "seed" in df.columns:
+        df["seed"] = pd.to_numeric(df["seed"], errors="coerce")
+    return df.dropna(subset=["primary_score", "step"]).sort_values(
+        ["size", "mix", "step", "task"]
+    ).reset_index(drop=True)
 
-    Columns match the schema expected by snr.dataloader.get_slice:
-    model, mix, size, step, task, primary_score, seed, plus tokens/compute.
-    """
-    eval_root = Path(eval_root)
-    rows = []
-    for ckpt_dir in eval_root.iterdir():
-        m = _MODEL_RE.match(ckpt_dir.name)
-        if not m:
-            continue
-        size = m["size"]
-        mix = f"fwEdu{m['edu']}"
-        seed = int(m["seed"])
-        step = int(m["iter"])
-        ckpt_scores = aggregate_parents(collect(ckpt_dir))
-        if not ckpt_scores:
-            continue
-        tokens = step * _TOKENS_PER_ITER
-        compute = 6 * _PARAMS[size] * tokens
-        for task, scores in ckpt_scores.items():
-            score = scores.get("acc,none", scores.get("exact_match,none"))
-            if score is None:
-                continue
-            rows.append(
-                dict(
-                    model=f"apertus-{size}-{mix}",
-                    mix=mix,
-                    size=size,
-                    step=step,
-                    task=task,
-                    primary_score=float(score),
-                    seed=seed,
-                    tokens=tokens,
-                    compute=compute,
-                )
-            )
-    df = pd.DataFrame(rows)
-    return df.sort_values(["size", "mix", "step", "task"]).reset_index(drop=True)
+
+def load_apertus_eval_results(
+    data_dir: str | Path = DEFAULT_DATA_DIR,
+) -> pd.DataFrame:
+    """One row per (model, ckpt, task) for the 12 Apertus custom pretrains."""
+    return _read_parquet(Path(data_dir) / PRETRAIN_PARQUET)
+
+
+def load_reference_hf_eval_results(
+    data_dir: str | Path = DEFAULT_DATA_DIR,
+) -> pd.DataFrame:
+    """Reference HF runs (SmolLM3, Olmo-3, Apertus-8B). Columns match
+    `load_apertus_eval_results` — `mix` is the HF "stage1"/"main", and
+    `step` is the model's training step (not directly comparable to
+    Apertus iter counts)."""
+    return _read_parquet(Path(data_dir) / REFERENCE_PARQUET)
+
+
+def load_all_eval_results(
+    data_dir: str | Path = DEFAULT_DATA_DIR,
+) -> pd.DataFrame:
+    """Concatenated pretraining_custom + reference_hf, with a `source`
+    column to distinguish them. Use when an analysis benefits from
+    pooling extra step-series data points (DA-ckpt, noise estimates,
+    rank correlations) — the per-mix SNR computations themselves only
+    apply within each source's own (size, mix) grid."""
+    a = load_apertus_eval_results(data_dir)
+    r = load_reference_hf_eval_results(data_dir)
+    a["source"] = "apertus"
+    r["source"] = "reference_hf"
+    return pd.concat([a, r], ignore_index=True).sort_values(
+        ["source", "size", "mix", "step", "task"]
+    ).reset_index(drop=True)
