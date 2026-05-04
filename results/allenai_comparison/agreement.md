@@ -4,7 +4,7 @@ Variant used: **Discrepancy** (`discrepancy`)
 Apertus SNR column: `snr_discrepancy_1B`  ·  AllenAI SNR column: `snr_discrepancy_1B`
 Shared-task universe: **63** tasks.
 
-| K | |∩| | |∩|/K | Jaccard | Shared top-K tasks |
+| K | n_intersection | intersection / K | Jaccard | Shared top-K tasks |
 |---|---:|---:|---:|---|
 | 5 | 3 | 0.60 | 0.43 | arc_easy, mmlu, mmlu_professional_law |
 | 10 | 7 | 0.70 | 0.54 | arc_challenge, arc_easy, hellaswag, mmlu, mmlu_moral_scenarios, mmlu_professional_law, mmlu_professional_psychology |

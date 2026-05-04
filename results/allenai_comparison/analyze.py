@@ -335,7 +335,7 @@ def run() -> None:
         f"AllenAI SNR column: `snr_{best_variant}_{ALLENAI_SIZE}`",
         f"Shared-task universe: **{len(shared)}** tasks.",
         "",
-        "| K | |∩| | |∩|/K | Jaccard | Shared top-K tasks |",
+        "| K | n_intersection | intersection / K | Jaccard | Shared top-K tasks |",
         "|---|---:|---:|---:|---|",
     ]
     for r in rows:

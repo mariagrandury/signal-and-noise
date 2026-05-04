@@ -58,13 +58,13 @@ def load_allenai_core() -> pd.DataFrame:
     df = pd.read_parquet(path)
 
     # Restrict to the DataDecide ladder at the four sizes we care about.
+    # `peteish-ladder` rows (model_type=='ladder') and external rows are
+    # dropped — they don't have the (mix × ckpt) grid the SNR variants
+    # consume, and including them would let scaling-law ladder steps
+    # leak into the per-mix groupings.
     df = df[df["model_type"] == "datadecide"]
     df = df[df["size"].isin(ALL_SIZES)].copy()
 
-    # The pipeline's get_slice / per_mix_inputs need: size, mix, task,
-    # step, primary_score. seed is referenced only when present; add a
-    # constant 0 so any group_by('seed') downstream stays happy.
-    df["seed"] = 0
     df = df.dropna(subset=["primary_score", "step", "size", "mix", "task"])
 
     # Coerce to the same dtypes the Apertus loader uses.
