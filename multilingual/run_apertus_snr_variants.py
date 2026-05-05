@@ -31,6 +31,10 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from multilingual.analyze_snr_variants import (
+    _ENGLISH_ONLY_TASKS, assign_language, benchmark_family,
+)
+from multilingual.smooth_subtasks import _is_language_aggregate
 from snr.constants import PLOT_DIR
 from snr.dataloader import get_slice
 from snr.download.apertus import load_apertus_eval_results
@@ -180,10 +184,29 @@ def write_variants_definitions(out_dir: Path) -> Path:
 
 # --- driver -----------------------------------------------------------------
 
+def _is_parent_task(task: str) -> bool:
+    """Match the cluster's ``aggregate_parents`` semantics: keep one row per
+    "real" evaluation, dropping the per-(lang, subject) facets that the
+    parquet ships alongside their language-aggregate parents.
+
+    Two branches:
+      - English standalone tasks (``mmlu``, ``hellaswag``, …): the explicit
+        list in ``_ENGLISH_ONLY_TASKS``.
+      - Multilingual per-language aggregates: the same
+        ``_is_language_aggregate`` rule used in
+        ``multilingual.smooth_subtasks.collect_multilingual_families``.
+    """
+    if task in _ENGLISH_ONLY_TASKS:
+        return True
+    return _is_language_aggregate(task, benchmark_family(task))
+
+
 def run():
     df = load_apertus_eval_results()
-    tasks = sorted(df["task"].unique())
-    print(f"Loaded {len(df):,} rows | {df['model'].nunique()} models | {len(tasks)} tasks")
+    all_tasks = sorted(df["task"].unique())
+    tasks = [t for t in all_tasks if _is_parent_task(t)]
+    print(f"Loaded {len(df):,} rows | {df['model'].nunique()} models | "
+          f"{len(tasks)} parent tasks (filtered from {len(all_tasks)} total)")
 
     write_variants_definitions(OUT_DIR)
 
