@@ -40,6 +40,7 @@ value 0.232; the per-item option count is variable (4–13) but the
 weighted average is ~4.3 across the canonical English set, and the
 multilingual variants follow the same schema.
 """
+
 from __future__ import annotations
 
 import sys
@@ -65,7 +66,7 @@ HERE = Path(__file__).resolve().parent
 # of 0.232 corresponds to ~4.31 options on average, which we use uniformly
 # for the multilingual variants since they share the schema).
 FAMILY_N_OPTIONS: dict[str, float] = {
-    "arc": 4,
+    "arc": 4,  # variable (3–5, dataset-dependent)
     "belebele": 4,
     "global_mmlu": 4,
     "global_mmlu_full": 4,
@@ -73,8 +74,8 @@ FAMILY_N_OPTIONS: dict[str, float] = {
     "hellaswag": 4,
     "multiblimp": 2,
     "paws": 2,
-    "truthfulqa": 1 / 0.232,         # mc1, variable per item
-    "truthfulqa_mc1": 1 / 0.232,     # English mc1, same schema
+    "truthfulqa": 4,  # variable (mc1 and mc2 differ per question)
+    "truthfulqa_mc1": 4,
     "xcopa": 2,
     "xnli": 3,
     "xstorycloze": 2,
@@ -98,9 +99,7 @@ def _per_task_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["family"] = df["task"].map(_family_of)
     df = df[df["family"].isin(FAMILY_N_OPTIONS)].copy()
-    df = df[[
-        _is_language_aggregate(t, f) for t, f in zip(df["task"], df["family"])
-    ]].copy()
+    df = df[[_is_language_aggregate(t, f) for t, f in zip(df["task"], df["family"])]].copy()
     df["language"] = df["task"].map(assign_language)
     df["random_baseline"] = df["family"].map(_baseline)
     df["above_random_ckpt"] = df["primary_score"] > df["random_baseline"]
@@ -125,23 +124,27 @@ def _per_task_stats(df: pd.DataFrame) -> pd.DataFrame:
         else:
             t = float("nan")
             p = float("nan")
-        rows.append({
-            "task": task,
-            "family": family,
-            "language": sub["language"].iloc[0],
-            "n_options": FAMILY_N_OPTIONS[family],
-            "random_baseline": rb,
-            "best_score": float(sub["primary_score"].max()),
-            "mean_final_score": float(np.mean(finals)) if len(finals) else float("nan"),
-            "std_final_score": float(np.std(finals, ddof=1)) if len(finals) >= 2 else float("nan"),
-            "n_models_final": int(len(finals)),
-            "n_final_above_random": int(np.sum(finals > rb)),
-            "frac_ckpts_above_random": float(sub["above_random_ckpt"].mean()),
-            "lift_final": float(np.mean(finals) - rb) if len(finals) else float("nan"),
-            "t_stat": t,
-            "p_value_one_sided_greater": p,
-            "significant_above_random": bool(p < 0.05) if not np.isnan(p) else False,
-        })
+        rows.append(
+            {
+                "task": task,
+                "family": family,
+                "language": sub["language"].iloc[0],
+                "n_options": FAMILY_N_OPTIONS[family],
+                "random_baseline": rb,
+                "best_score": float(sub["primary_score"].max()),
+                "mean_final_score": float(np.mean(finals)) if len(finals) else float("nan"),
+                "std_final_score": (
+                    float(np.std(finals, ddof=1)) if len(finals) >= 2 else float("nan")
+                ),
+                "n_models_final": int(len(finals)),
+                "n_final_above_random": int(np.sum(finals > rb)),
+                "frac_ckpts_above_random": float(sub["above_random_ckpt"].mean()),
+                "lift_final": float(np.mean(finals) - rb) if len(finals) else float("nan"),
+                "t_stat": t,
+                "p_value_one_sided_greater": p,
+                "significant_above_random": bool(p < 0.05) if not np.isnan(p) else False,
+            }
+        )
     return pd.DataFrame(rows).sort_values(["family", "language"]).reset_index(drop=True)
 
 
@@ -149,22 +152,25 @@ def _per_family(per_task: pd.DataFrame) -> pd.DataFrame:
     pt = per_task.copy()
     pt["above_at_final"] = pt["mean_final_score"] > pt["random_baseline"]
     g = pt.groupby("family")
-    out = pd.DataFrame({
-        "n_tasks": g.size(),
-        "n_options": g["n_options"].first(),
-        "random_baseline": g["random_baseline"].first(),
-        "mean_final_median": g["mean_final_score"].median(),
-        "mean_final_mean": g["mean_final_score"].mean(),
-        "best_score_max": g["best_score"].max(),
-        "lift_final_median": g["lift_final"].median(),
-        "n_tasks_significant_above_random": g["significant_above_random"].sum(),
-        "frac_tasks_above_random_at_final": g["above_at_final"].mean(),
-    }).reset_index()
+    out = pd.DataFrame(
+        {
+            "n_tasks": g.size(),
+            "n_options": g["n_options"].first(),
+            "random_baseline": g["random_baseline"].first(),
+            "mean_final_median": g["mean_final_score"].median(),
+            "mean_final_mean": g["mean_final_score"].mean(),
+            "best_score_max": g["best_score"].max(),
+            "lift_final_median": g["lift_final"].median(),
+            "n_tasks_significant_above_random": g["significant_above_random"].sum(),
+            "frac_tasks_above_random_at_final": g["above_at_final"].mean(),
+        }
+    ).reset_index()
     out = out.sort_values(["random_baseline", "mean_final_median"], ascending=[True, False])
     return out
 
 
 # --- plotting ---------------------------------------------------------------
+
 
 def _strip_plot(per_task: pd.DataFrame, per_family: pd.DataFrame, out_path: Path) -> None:
     """Per-family strip plot of mean-final-score across tasks; vertical
@@ -186,13 +192,20 @@ def _strip_plot(per_task: pd.DataFrame, per_family: pd.DataFrame, out_path: Path
         colors: list[str] = []
         for s, sig in zip(scores, sigs):
             if s <= rb:
-                colors.append("#d62728")          # red
+                colors.append("#d62728")  # red
             elif sig:
-                colors.append("#2ca02c")          # green
+                colors.append("#2ca02c")  # green
             else:
-                colors.append("#7f7f7f")          # gray (above but n.s.)
-        ax.scatter(scores, np.full_like(scores, i, dtype=float) + jitter,
-                   c=colors, s=70, alpha=0.85, edgecolor="black", linewidth=0.5)
+                colors.append("#7f7f7f")  # gray (above but n.s.)
+        ax.scatter(
+            scores,
+            np.full_like(scores, i, dtype=float) + jitter,
+            c=colors,
+            s=70,
+            alpha=0.85,
+            edgecolor="black",
+            linewidth=0.5,
+        )
         # Random baseline tick at this family's row.
         ax.plot([rb, rb], [i - 0.40, i + 0.40], color="black", lw=2.0, alpha=0.85)
         # Family median, dashed.
@@ -233,9 +246,7 @@ def _lift_bars(per_task: pd.DataFrame, out_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(10, 0.22 * len(df) + 1.5))
     y = np.arange(len(df))
     colors = [
-        "#2ca02c" if (lift > 0 and sig) else
-        "#7f7f7f" if lift > 0 else
-        "#d62728"
+        "#2ca02c" if (lift > 0 and sig) else "#7f7f7f" if lift > 0 else "#d62728"
         for lift, sig in zip(df["lift_final"], df["significant_above_random"])
     ]
     ax.barh(y, df["lift_final"], color=colors, edgecolor="black", linewidth=0.3)
@@ -275,9 +286,7 @@ def _per_size_final_mean(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["family"] = df["task"].map(_family_of)
     df = df[df["family"].isin(FAMILY_N_OPTIONS)].copy()
-    df = df[[
-        _is_language_aggregate(t, f) for t, f in zip(df["task"], df["family"])
-    ]].copy()
+    df = df[[_is_language_aggregate(t, f) for t, f in zip(df["task"], df["family"])]].copy()
     # Last ckpt per (model, task), then average across the 3 mixes per (size, task).
     last_idx = df.groupby(["model", "task"])["step"].idxmax()
     last = df.loc[last_idx, ["task", "size", "primary_score"]]
@@ -294,9 +303,7 @@ def _size_heatmap(df: pd.DataFrame, per_task: pd.DataFrame, out_path: Path) -> N
     wide = wide.reindex(columns=_SIZE_ORDER)
 
     # Order rows by family then language, like the bar plot.
-    task_order = (
-        per_task.sort_values(["family", "language", "task"])["task"].tolist()
-    )
+    task_order = per_task.sort_values(["family", "language", "task"])["task"].tolist()
     wide = wide.reindex(task_order)
 
     # AVG = mean across the 4 sizes (skip NaNs to be safe; all 4 should be filled).
@@ -307,19 +314,20 @@ def _size_heatmap(df: pd.DataFrame, per_task: pd.DataFrame, out_path: Path) -> N
     fams = per_task.set_index("task")["family"].reindex(task_order).to_numpy()
 
     score = wide[cols].to_numpy()
-    lift = score - rb[:, None]   # broadcast: each row's baseline subtracted
+    lift = score - rb[:, None]  # broadcast: each row's baseline subtracted
 
     # Symmetric color limits → white at 0 lift = at-baseline for that row.
     # Clip vmax to the 90th percentile of |lift| so a few extreme rows
     # (multiblimp at +0.4) don't squash the gradient for the rest.
     vmax_full = float(np.nanmax(np.abs(lift)))
     vmax = float(np.nanpercentile(np.abs(lift), 90))
-    vmax = max(vmax, 0.05)   # avoid a near-zero scale if everything is small
+    vmax = max(vmax, 0.05)  # avoid a near-zero scale if everything is small
     vmin = -vmax
 
     fig, ax = plt.subplots(figsize=(7, 0.22 * len(task_order) + 2.0))
-    im = ax.imshow(lift, aspect="auto", cmap="RdYlGn",
-                   vmin=vmin, vmax=vmax, interpolation="nearest")
+    im = ax.imshow(
+        lift, aspect="auto", cmap="RdYlGn", vmin=vmin, vmax=vmax, interpolation="nearest"
+    )
 
     ax.set_xticks(range(len(cols)))
     ax.set_xticklabels(cols)
@@ -336,8 +344,7 @@ def _size_heatmap(df: pd.DataFrame, per_task: pd.DataFrame, out_path: Path) -> N
                 continue
             # Pick black/white text based on |lift| relative to vmax for legibility.
             text_color = "black" if abs(lift[i, j]) < 0.55 * vmax else "white"
-            ax.text(j, i, f"{v:.3f}", ha="center", va="center",
-                    fontsize=6, color=text_color)
+            ax.text(j, i, f"{v:.3f}", ha="center", va="center", fontsize=6, color=text_color)
 
     # Family separators on the y-axis.
     fam_changes = np.where(fams[1:] != fams[:-1])[0] + 1
@@ -350,8 +357,15 @@ def _size_heatmap(df: pd.DataFrame, per_task: pd.DataFrame, out_path: Path) -> N
     for fam in pd.unique(fams):
         idx = np.where(fams == fam)[0]
         c = float(np.mean(idx))
-        ax.text(len(cols) - 0.4, c, f"  {fam}\n  (b={1.0 / FAMILY_N_OPTIONS[fam]:.3f})",
-                fontsize=7, va="center", ha="left", style="italic")
+        ax.text(
+            len(cols) - 0.4,
+            c,
+            f"  {fam}\n  (b={1.0 / FAMILY_N_OPTIONS[fam]:.3f})",
+            fontsize=7,
+            va="center",
+            ha="left",
+            style="italic",
+        )
 
     cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.18, extend="both")
     cbar.set_label(
@@ -374,16 +388,22 @@ def _size_heatmap(df: pd.DataFrame, per_task: pd.DataFrame, out_path: Path) -> N
 
 def main() -> None:
     df = load_apertus_eval_results()
-    print(f"Loaded {len(df):,} rows | {df['model'].nunique()} models | "
-          f"{df['task'].nunique()} tasks total")
+    print(
+        f"Loaded {len(df):,} rows | {df['model'].nunique()} models | "
+        f"{df['task'].nunique()} tasks total"
+    )
 
     per_task = _per_task_stats(df)
-    print(f"  → {len(per_task)} tasks across {per_task['family'].nunique()} "
-          "benchmark families with a defined random baseline")
+    print(
+        f"  → {len(per_task)} tasks across {per_task['family'].nunique()} "
+        "benchmark families with a defined random baseline"
+    )
     skipped = sorted(set(df["task"].map(_family_of)) - set(FAMILY_N_OPTIONS))
     if skipped:
-        print(f"  Skipped {len(skipped)} families without a defined n_options "
-              f"(e.g. {skipped[:5]}…)")
+        print(
+            f"  Skipped {len(skipped)} families without a defined n_options "
+            f"(e.g. {skipped[:5]}…)"
+        )
 
     per_family = _per_family(per_task)
 
@@ -405,9 +425,14 @@ def main() -> None:
 
     print("\nPer-family summary:")
     cols = [
-        "family", "n_tasks", "n_options", "random_baseline",
-        "mean_final_median", "lift_final_median",
-        "n_tasks_significant_above_random", "frac_tasks_above_random_at_final",
+        "family",
+        "n_tasks",
+        "n_options",
+        "random_baseline",
+        "mean_final_median",
+        "lift_final_median",
+        "n_tasks_significant_above_random",
+        "frac_tasks_above_random_at_final",
     ]
     with pd.option_context("display.width", 160, "display.max_colwidth", 36):
         print(per_family[cols].to_string(index=False))
@@ -415,9 +440,11 @@ def main() -> None:
     n_tasks = len(per_task)
     n_sig = int(per_task["significant_above_random"].sum())
     n_above = int((per_task["mean_final_score"] > per_task["random_baseline"]).sum())
-    print(f"\n{n_above}/{n_tasks} tasks have mean-final-score above the "
-          f"family random baseline; {n_sig}/{n_tasks} are significantly "
-          "above random (one-sample t-test, p<0.05).")
+    print(
+        f"\n{n_above}/{n_tasks} tasks have mean-final-score above the "
+        f"family random baseline; {n_sig}/{n_tasks} are significantly "
+        "above random (one-sample t-test, p<0.05)."
+    )
 
 
 if __name__ == "__main__":
