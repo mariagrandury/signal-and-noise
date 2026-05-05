@@ -229,18 +229,35 @@ def _result_row(task_name: str, size: str, sweep: dict) -> dict:
 ### Case 1: per-benchmark (multilingual families) ###
 
 
+# Trailing tokens that are allowed AFTER the language token in a
+# language-aggregate task name. Anything else after the language is
+# treated as a subject facet and the task is rejected.
+#  - SCRIPTS: ISO 15924 codes seen in lm-eval task names, plus the
+#    ``spai`` region marker that shows up in
+#    ``global_piqa_completions_spa_latn_spai``.
+#  - FORMATS: lm-eval format suffixes (``mc1`` / ``mc2`` for the
+#    multiple-choice variants of TruthfulQA et al.).
+_TRAILING_OK = {
+    "arab", "latn", "cyrl", "hans", "hant", "deva", "jpan",
+    "thai", "geor", "hebr", "beng", "knda", "tibt", "spai",
+    "mc1", "mc2",
+}
+
+
 def _is_language_aggregate(task: str, family: str) -> bool:
     """Keep only the per-language aggregate of a family (e.g.,
     ``global_mmlu_ar``), not the per-(lang, subject) facet
-    (``global_mmlu_ar_business``). The parquet now ships both kinds of
+    (``global_mmlu_ar_business``). The parquet ships both kinds of
     keys, so Case 1's "subtask = language" sweep needs this filter or
     each language counts multiple times.
 
     A "language aggregate" is a task whose tokens after the family name
-    are: one language token, optionally followed by one short script tag
-    (``Arab``/``Latn``/...) — matching the actual layouts in scope
-    (``arc_de``, ``belebele_arb_Arab``, ``global_mmlu_ar``,
-    ``global_piqa_completions_eng_latn``).
+    start with one language token; any further trailing tokens must be
+    in ``_TRAILING_OK`` (script codes or known lm-eval format suffixes).
+    Examples accepted: ``arc_de``, ``belebele_arb_Arab``,
+    ``global_mmlu_ar``, ``global_piqa_completions_eng_latn``,
+    ``global_piqa_completions_spa_latn_spai``, ``truthfulqa_eu_mc1``.
+    Rejected: ``global_mmlu_ar_anatomy``, ``global_mmlu_es_social_sciences``.
     """
     if task in _BENCHMARK_FAMILY_OVERRIDES:
         return True
@@ -249,14 +266,7 @@ def _is_language_aggregate(task: str, family: str) -> bool:
     rest = task[len(family) + 1:].split("_")
     if not rest or rest[0] not in _LANG_MAP:
         return False
-    if len(rest) == 1:
-        return True
-    # Allow exactly one trailing token if it's a known ISO 15924 script tag.
-    _SCRIPTS = {"arab", "latn", "cyrl", "hans", "hant", "deva", "jpan",
-                "thai", "geor", "hebr", "beng", "knda", "tibt", "spai"}
-    if len(rest) == 2 and rest[1].lower() in _SCRIPTS:
-        return True
-    return False
+    return all(tok.lower() in _TRAILING_OK for tok in rest[1:])
 
 
 def collect_multilingual_families(df: pd.DataFrame) -> dict[str, list[str]]:

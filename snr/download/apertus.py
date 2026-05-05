@@ -59,6 +59,22 @@ def _normalise_mix(mix: str) -> str:
     return mix
 
 
+def _size_key(s: str) -> float:
+    """``175M`` → 0.175, ``1B`` → 1.0, ``7B`` → 7.0. Used for numeric
+    size ordering — lexicographic sort would put ``1B`` before ``350M``."""
+    if not isinstance(s, str):
+        return float("nan")
+    s = s.strip()
+    try:
+        if s.endswith("M"):
+            return float(s[:-1]) / 1000.0
+        if s.endswith("B"):
+            return float(s[:-1])
+    except ValueError:
+        pass
+    return float("nan")
+
+
 def _read_parquet(path: Path) -> pd.DataFrame:
     df = pd.read_parquet(path)
     # Schema sanity: keep the columns the SNR pipeline expects, drop the
@@ -74,9 +90,12 @@ def _read_parquet(path: Path) -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     if "seed" in df.columns:
         df["seed"] = pd.to_numeric(df["seed"], errors="coerce")
-    return df.dropna(subset=["primary_score", "step"]).sort_values(
-        ["size", "mix", "step", "task"]
-    ).reset_index(drop=True)
+    df = df.dropna(subset=["primary_score", "step"])
+    # Numeric size sort (string sort would give 175M, 1B, 350M, 600M).
+    df = df.assign(_size_num=df["size"].map(_size_key)).sort_values(
+        ["_size_num", "mix", "step", "task"]
+    ).drop(columns="_size_num").reset_index(drop=True)
+    return df
 
 
 def load_apertus_eval_results(
@@ -108,6 +127,8 @@ def load_all_eval_results(
     r = load_reference_hf_eval_results(data_dir)
     a["source"] = "apertus"
     r["source"] = "reference_hf"
-    return pd.concat([a, r], ignore_index=True).sort_values(
-        ["source", "size", "mix", "step", "task"]
-    ).reset_index(drop=True)
+    out = pd.concat([a, r], ignore_index=True)
+    out = out.assign(_size_num=out["size"].map(_size_key)).sort_values(
+        ["source", "_size_num", "mix", "step", "task"]
+    ).drop(columns="_size_num").reset_index(drop=True)
+    return out

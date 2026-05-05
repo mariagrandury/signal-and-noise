@@ -35,17 +35,19 @@ or per size? Two flavors:
 
 `summary.csv` ranks every (case, task, size) by
 `snr_gain = best_snr − full_set_snr` across the three logical-subset
-cases — 92 rows. The pattern across cases: the best subset usually
-beats the full set substantially at smaller sizes (175M–600M) and the
-gap narrows at 1B as the full-set SNR rises on its own.
+cases — 96 rows (13 multilingual families × 4 sizes for Case 1, 4 sizes
+for Case 2, 10 languages × 4 sizes for Case 3). The pattern: the best
+subset usually beats the full set substantially at smaller sizes
+(175M–600M) and the gap narrows at 1B as the full-set SNR rises on its
+own.
 
 ### Case 1 — per-benchmark family (subtask = language)
 
 For most multilingual families a 1–4-language subset beats the full
 language set, often by ≥1 SNR point. The strongest case is **xcopa**:
-across 175M / 350M / 600M, the entire benchmark's signal collapses to
+across 175M / 350M / 600M the entire benchmark's signal collapses to
 `xcopa_tr` (Turkish) — every other language adds noise. At 1B the best
-subset shifts to `xcopa_vi`. This is also the family with the lowest
+subset shifts to `xcopa_vi`. xcopa is also the family with the lowest
 full-set SNR, so the gain matters most here.
 
 ![xcopa — combined SNR vs. subset size, per model size](per_benchmark_plots/xcopa.png)
@@ -60,11 +62,13 @@ Top-5 (case, task, size) by `snr_gain`:
 | xwinograd | 1B | 0.92 | 1 | 2.56 | **1.64** | `xwinograd_zh` |
 | truthfulqa | 350M | 0.58 | 1 | 2.15 | **1.57** | `truthfulqa_hi_mc1` |
 
-Negative cases worth noting (full set ≈ best): `multiblimp` and
-`xstorycloze` already saturate near SNR ≈ 2.3 with the full language
-set, so any one-language subset can only match it. `global_mmlu` (the
-short variant) yields no signal at any size — only the `_full` variant
-has usable SNR on these models.
+Negative cases worth noting (full set ≈ best): `multiblimp`,
+`xstorycloze`, and `hellaswag` already saturate near SNR ≈ 2.2–2.4
+with the full language set, so any one-language subset can only match
+it. `global_mmlu` (the short variant) yields no signal at any size —
+only the `_full` variant has usable SNR on these models. `mgsm_direct`
+is in the parquet (7 languages) but is excluded because every row's
+`primary_score` is NaN — see "Limitations" below.
 
 ### Case 2 — `global_mmlu_full` subjects (subtask = subject, mean across 10 langs)
 
@@ -85,8 +89,8 @@ range from 1 to 4 subjects; `snr_gain` peaks at 0.84 at 600M
 | 600M | 1.52 | 3 | 2.36 | **0.84** | `marketing\|world_religions\|clinical_knowledge` |
 | 1B | 1.48 | 1 | 1.92 | 0.44 | `world_religions` |
 
-> n_languages averaged per (mix, step, subject) sits near 10 for most
-> sizes; results on cells with <8 langs are weaker (rare in this run).
+Mean #languages averaged per (mix, step, subject) = 10.0 across all
+sizes (full coverage), so no language-coverage caveat applies here.
 
 ### Case 3 — `global_mmlu_full` subjects per language
 
@@ -120,9 +124,11 @@ sweep — same shape as the logical-subset sweep, but with one doc-id as
 the atomic unit.
 
 `per_sample/summary_all.csv` has 328 rows (320 `ok`, 8 `no_data`). The
-gains dwarf the logical-subset cases because per-sample search has
-many more degrees of freedom — top entries reach SNR ≈ 3.4 from a
-full-set baseline below 1.
+gains are larger than the logical-subset cases — but note that
+per-sample acc is binary 0/1, so the relative-std SNR primitive
+operates on a different scale than per-task SNR (a single sample with
+all-correct ckpts has noise=0 → infinite SNR, guarded to NaN). The
+absolute SNR values are not directly comparable to Case 1–3 numbers.
 
 Top-5 (lang, task, size) by `snr_gain` (status = ok):
 
@@ -139,15 +145,44 @@ To regenerate (cluster only):
 python multilingual/smooth_subtasks_per_sample.py
 ```
 
+## Limitations
+
+- **Relaxed inner-join in `snr_for_subset`**. The combined-subset
+  score at each `(mix, step)` is the mean of *whichever subtasks
+  happen to be present* at that cell, not a fixed-set average. For
+  sparse-coverage families like `arc` (not every language at every
+  ckpt) the score's denominator changes from cell to cell, which can
+  inflate or deflate both the signal (between-mix dispersion) and the
+  noise (pooled std). Documented in `snr_for_subset`'s docstring; the
+  strict alternative leaves most cells empty.
+- **English `truthfulqa_mc1` is silently excluded from Case 1.**
+  `assign_language` recognises it as English (via
+  `_ENGLISH_ONLY_TASKS`) but its task name carries no language token,
+  so `benchmark_family` puts it in a singleton family
+  (`truthfulqa_mc1`), which the `len(ts) > 1` filter then drops. The
+  multilingual `truthfulqa_<lang>_mc1` variants form the `truthfulqa`
+  family (7 langs) without an English baseline.
+- **`mgsm_direct` is dropped at the loader.** All 157 mgsm rows in
+  `pretraining_custom-*.parquet` have `primary_score = NaN` even
+  though the metrics dict carries an `exact_match` value. The parquet
+  was built with `primary_metric = acc`, but mgsm reports
+  `exact_match`. The fix belongs in the parquet generator
+  (`swissai-evals-post-train`), not in this repo.
+- **Per-sample SNR is on binary acc.** The 2.68 headline gain for
+  `xcopa_sw` is real but lives on a different scale than the per-task
+  SNR figures in Cases 1–3.
+
 ## Directory contents
 
 - [INSTRUCTIONS.md](INSTRUCTIONS.md) — execution plan.
 - [summary.csv](summary.csv) — every (case, task, size) ranked by
-  `snr_gain`. Built by `build_summary` in
+  `snr_gain` (96 rows). Built by `build_summary` in
   [`multilingual/smooth_subtasks.py`](../../multilingual/smooth_subtasks.py).
 - [per_benchmark.csv](per_benchmark.csv) +
   [per_benchmark_plots/](per_benchmark_plots/) — Case 1 outputs (one
-  PNG per multilingual family, 12 in total).
+  PNG per multilingual family, 13 in total: arc, belebele,
+  global_mmlu, global_mmlu_full, global_piqa_completions, hellaswag,
+  multiblimp, paws, truthfulqa, xcopa, xnli, xstorycloze, xwinograd).
 - [global_mmlu_full.csv](global_mmlu_full.csv) +
   [global_mmlu_full_subjects.png](global_mmlu_full_subjects.png) —
   Case 2 outputs.
