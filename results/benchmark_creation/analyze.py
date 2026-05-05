@@ -45,83 +45,103 @@ SNR_COL = "snr_mpd_1B"
 #   curation_category — how items in the per-language eval set were produced.
 #   source_origin     — whether the source benchmark was English-only and
 #                       translated, or originally multilingual / aggregated.
-FAMILY_META: dict[str, dict[str, str]] = {
+# Task-format axes added in Q4-extension. `format`:
+#   mcq_question_only — question + N letter-labeled options, no passage.
+#   mrc_passage       — a passage to read + question + N options.
+#   completion        — context + N candidate continuations, scored by LL.
+#   minimal_pair      — two minimally-differing sentences, pick higher-LL.
+#   classification    — premise + hypothesis (or sentence pair) -> N labels.
+# `passage` is True iff the prompt contains a substantial passage / long
+# context (a heuristic, formalised quantitatively in Phase B).
+FAMILY_META: dict[str, dict] = {
     "arc": {
         "data_source": "ARC (Clark et al. 2018), Okapi-translated",
         "curation_process": "machine translation by ChatGPT",
         "curation_category": "machine_translation",
         "source_origin": "english_translated",
+        "format": "mcq_question_only", "n_options": 4, "passage": False,
     },
     "belebele": {
         "data_source": "FLORES-200 passages, custom MRC questions",
         "curation_process": "human translation by bilingual experts",
         "curation_category": "human_translation",
-        # FLORES-200 passages are sourced from English news; the questions
-        # are written in parallel by experts. Treat as english_translated
-        # (with very high curation quality) rather than native-multilingual.
         "source_origin": "english_translated",
+        "format": "mrc_passage", "n_options": 4, "passage": True,
     },
     "global_mmlu": {
         "data_source": "MMLU (Hendrycks et al. 2021), Cohere Lite-style",
         "curation_process": "professional human translation + post-editing",
         "curation_category": "human_translation",
         "source_origin": "english_translated",
+        "format": "mcq_question_only", "n_options": 4, "passage": False,
     },
     "global_mmlu_full": {
         "data_source": "MMLU (Hendrycks et al. 2021), Cohere Full",
         "curation_process": "machine translation + crowd / expert post-editing",
         "curation_category": "mt_post_edited",
         "source_origin": "english_translated",
+        "format": "mcq_question_only", "n_options": 4, "passage": False,
     },
     "global_piqa_completions": {
         "data_source": "originally-multilingual native authoring (Arnett 2025)",
         "curation_process": "participatory native-speaker authoring (no translation)",
         "curation_category": "originally_multilingual",
         "source_origin": "originally_multilingual",
+        "format": "completion", "n_options": 2, "passage": False,
     },
     "hellaswag": {
         "data_source": "HellaSwag (Zellers et al. 2019), Okapi-translated",
         "curation_process": "machine translation by ChatGPT",
         "curation_category": "machine_translation",
         "source_origin": "english_translated",
+        "format": "completion", "n_options": 4, "passage": True,
     },
     "multiblimp": {
         "data_source": "Universal Dependencies + UniMorph (Jumelet 2025)",
         "curation_process": "template-based automatic generation from UD/UniMorph",
         "curation_category": "template_generated",
         "source_origin": "originally_multilingual",
+        "format": "minimal_pair", "n_options": 2, "passage": False,
     },
     "paws": {
         "data_source": "PAWS (Zhang 2019); PAWS-X + HiTZ/PAWS-eu",
         "curation_process": "professional human translation (mixed sources for eu)",
         "curation_category": "human_translation",
         "source_origin": "english_translated",
+        "format": "classification", "n_options": 2, "passage": False,
     },
     "xcopa": {
         "data_source": "COPA (Roemmele 2011); XCOPA + HiTZ/XCOPA-eu",
         "curation_process": "professional human translation + native re-annotation",
         "curation_category": "human_translation",
         "source_origin": "english_translated",
+        "format": "completion", "n_options": 2, "passage": False,
     },
     "xnli": {
         "data_source": "MultiNLI (Williams 2018); XNLI + XNLIeu",
         "curation_process": "professional human translation (mt+post-edit for eu)",
         "curation_category": "human_translation",
         "source_origin": "english_translated",
+        "format": "classification", "n_options": 3, "passage": False,
     },
     "xstorycloze": {
         "data_source": "Story Cloze Test (Mostafazadeh 2016), XStoryCloze",
         "curation_process": "professional human translation",
         "curation_category": "human_translation",
         "source_origin": "english_translated",
+        "format": "completion", "n_options": 2, "passage": True,
     },
     "xwinograd": {
         "data_source": "aggregated native Winograd schemas",
         "curation_process": "originally-multilingual aggregation of native schemas",
         "curation_category": "originally_multilingual",
         "source_origin": "originally_multilingual",
+        "format": "completion", "n_options": 2, "passage": False,
     },
 }
+# Derived: random baseline = 1 / n_options
+for _f, _meta in FAMILY_META.items():
+    _meta["random_baseline"] = round(1.0 / _meta["n_options"], 3)
 
 # Per-task overrides: (family, lang) → curation_category. Used when an `_eu`
 # subset comes from a different paper with a different curation method than
@@ -166,7 +186,13 @@ def per_family_aggregate(per_task: pd.DataFrame) -> pd.DataFrame:
     meta = pd.DataFrame.from_dict(FAMILY_META, orient="index").reset_index().rename(
         columns={"index": "family"}
     )
-    return out.merge(meta, on="family", how="left").sort_values("snr_median", ascending=False)
+    merged = out.merge(meta, on="family", how="left")
+    # Phase B: optional length features written by length_features.py.
+    length_csv = HERE / "length_features.csv"
+    if length_csv.exists():
+        lf = pd.read_csv(length_csv)
+        merged = merged.merge(lf, on="family", how="left")
+    return merged.sort_values("snr_median", ascending=False)
 
 
 def per_task_with_overrides(per_task: pd.DataFrame) -> pd.DataFrame:
@@ -243,6 +269,105 @@ _CATEGORY_COLORS = {
     "mt_post_edited": "#d62728",
     "machine_translation": "#9467bd",
 }
+
+
+def _scatter_baseline(per_family: pd.DataFrame, out_path: Path) -> None:
+    """SNR vs random baseline (1/n_options) on log-y. Tests whether
+    fewer-option tasks (higher baseline) systematically yield higher SNR."""
+    fig, ax = plt.subplots(figsize=(8, 6))
+    x = per_family["random_baseline"].to_numpy()
+    y = per_family["snr_median"].to_numpy()
+    colors = [_CATEGORY_COLORS[c] for c in per_family["curation_category"]]
+    ax.scatter(x, y, c=colors, s=110, edgecolor="black", linewidth=0.7)
+    for xi, yi, lbl in zip(x, y, per_family["family"]):
+        ax.annotate(lbl, (xi, yi), fontsize=8,
+                    xytext=(5, 3), textcoords="offset points")
+    # Spearman + log-linear OLS.
+    rho, p_rho = stats.spearmanr(x, y)
+    log_y = np.log10(y)
+    slope, intercept, r, p_lin, _ = stats.linregress(x, log_y)
+    xx = np.linspace(x.min(), x.max(), 50)
+    ax.plot(xx, 10 ** (intercept + slope * xx), "k--", lw=1, alpha=0.6,
+            label=f"OLS log10(SNR) = {intercept:.2f} + {slope:.2f}·baseline\nPearson r = {r:.2f}, p = {p_lin:.3f}")
+    ax.set_yscale("log")
+    ax.set_xlabel("random baseline (1 / n_options)")
+    ax.set_ylabel("median snr_mpd_1B (log scale)")
+    ax.set_title(f"SNR vs random baseline. Spearman ρ = {rho:.2f} (p={p_rho:.3f})")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="lower right", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"  Spearman rho = {rho:.3f}, p = {p_rho:.4f}")
+
+
+def _scatter_length(
+    per_family: pd.DataFrame,
+    x_col: str,
+    out_path: Path,
+    title: str,
+) -> tuple[float, float]:
+    """Scatter SNR (log) vs a continuous length feature (log).
+    Returns (Spearman rho, p)."""
+    fig, ax = plt.subplots(figsize=(8, 6))
+    df = per_family.dropna(subset=[x_col])
+    x = df[x_col].to_numpy()
+    y = df["snr_median"].to_numpy()
+    colors = [_CATEGORY_COLORS[c] for c in df["curation_category"]]
+    ax.scatter(x, y, c=colors, s=110, edgecolor="black", linewidth=0.7)
+    for xi, yi, lbl in zip(x, y, df["family"]):
+        ax.annotate(lbl, (xi, yi), fontsize=8,
+                    xytext=(5, 3), textcoords="offset points")
+    rho, p_rho = stats.spearmanr(x, y)
+    log_x = np.log10(x)
+    log_y = np.log10(y)
+    slope, intercept, r, p_lin, _ = stats.linregress(log_x, log_y)
+    xx = np.geomspace(x.min(), x.max(), 50)
+    ax.plot(xx, 10 ** (intercept + slope * np.log10(xx)),
+            "k--", lw=1, alpha=0.6,
+            label=f"log-log OLS: slope={slope:.2f}\nPearson r = {r:.2f}, p = {p_lin:.3f}")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel(f"{x_col} (log scale)")
+    ax.set_ylabel("median snr_mpd_1B (log scale)")
+    ax.set_title(f"{title}.  Spearman ρ = {rho:.2f} (p={p_rho:.3f})")
+    ax.grid(True, alpha=0.3, which="both")
+    ax.legend(loc="best", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"  {x_col}: ρ = {rho:.3f}, p = {p_rho:.4f}")
+    return float(rho), float(p_rho)
+
+
+def _length_grid(per_family: pd.DataFrame, out_path: Path) -> None:
+    """Three-panel side-by-side: SNR vs context_len, option_len, ratio."""
+    cols = [
+        ("context_len_chars_median", "context length (chars)"),
+        ("option_len_chars_median",  "option length (chars, avg over options)"),
+        ("context_to_option_ratio",  "context : option ratio"),
+    ]
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
+    for ax, (col, label) in zip(axes, cols):
+        df = per_family.dropna(subset=[col])
+        x = df[col].to_numpy()
+        y = df["snr_median"].to_numpy()
+        colors = [_CATEGORY_COLORS[c] for c in df["curation_category"]]
+        ax.scatter(x, y, c=colors, s=80, edgecolor="black", linewidth=0.6)
+        for xi, yi, lbl in zip(x, y, df["family"]):
+            ax.annotate(lbl, (xi, yi), fontsize=7,
+                        xytext=(4, 2), textcoords="offset points")
+        rho, p = stats.spearmanr(x, y)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel(label)
+        ax.set_title(f"{col}\nρ = {rho:.2f} (p={p:.3f})")
+        ax.grid(True, alpha=0.3, which="both")
+    axes[0].set_ylabel("median snr_mpd_1B (log scale)")
+    fig.suptitle("Phase B: SNR vs length features (color = curation category)")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
 
 
 def _ranked_bar(per_family: pd.DataFrame, out_path: Path) -> None:
@@ -334,13 +459,79 @@ def main() -> None:
     _ranked_bar(per_family, HERE / "snr_per_family_ranked.png")
     print("Wrote snr_per_family_ranked.png")
 
+    # --- Task-format axes (Phase A) ----------------------------------------
+    print("\nFamily-level Kruskal-Wallis by n_options:")
+    per_family["n_options_str"] = per_family["n_options"].astype(int).astype(str)
+    H, p, ng = _strip_plot(
+        per_family,
+        group_col="n_options_str",
+        value_col="snr_median",
+        order=["2", "3", "4"],
+        label_col="family",
+        title=f"Per-family median {SNR_COL} by number of answer options",
+        out_path=HERE / "snr_by_n_options.png",
+    )
+    group_rows.append({"view": "family/n_options", "H": H, "p": p, "n_groups": ng})
+
+    print("\nFamily-level Kruskal-Wallis by format:")
+    format_order = ["minimal_pair", "completion", "classification",
+                    "mcq_question_only", "mrc_passage"]
+    H, p, ng = _strip_plot(
+        per_family,
+        group_col="format",
+        value_col="snr_median",
+        order=format_order,
+        label_col="family",
+        title=f"Per-family median {SNR_COL} by task format",
+        out_path=HERE / "snr_by_format.png",
+    )
+    group_rows.append({"view": "family/format", "H": H, "p": p, "n_groups": ng})
+
+    print("\nFamily-level Kruskal-Wallis by passage flag:")
+    per_family["passage_str"] = per_family["passage"].map({True: "passage", False: "no_passage"})
+    H, p, ng = _strip_plot(
+        per_family,
+        group_col="passage_str",
+        value_col="snr_median",
+        order=["no_passage", "passage"],
+        label_col="family",
+        title=f"Per-family median {SNR_COL} by passage flag",
+        out_path=HERE / "snr_by_passage.png",
+    )
+    group_rows.append({"view": "family/passage", "H": H, "p": p, "n_groups": ng})
+
+    # Continuous: SNR vs random_baseline (n_options = 1/baseline)
+    _scatter_baseline(per_family, HERE / "snr_vs_random_baseline.png")
+    print("Wrote snr_vs_random_baseline.png")
+
+    # --- Length features (Phase B) -----------------------------------------
+    if "context_len_chars_median" in per_family.columns:
+        print("\nLength-feature correlations (Spearman):")
+        for col, fname in [
+            ("context_len_chars_median", "snr_vs_context_len.png"),
+            ("option_len_chars_median",  "snr_vs_option_len.png"),
+            ("context_to_option_ratio",  "snr_vs_context_option_ratio.png"),
+        ]:
+            rho, p = _scatter_length(
+                per_family, col, HERE / fname,
+                title=f"SNR vs {col}",
+            )
+            group_rows.append({
+                "view": f"family/{col}",
+                "H": float("nan"), "p": p, "n_groups": len(per_family),
+                "spearman_rho": rho,
+            })
+        _length_grid(per_family, HERE / "snr_vs_length_features.png")
+        print("Wrote snr_vs_length_features.png")
+
     pd.DataFrame(group_rows).to_csv(HERE / "group_stats.csv", index=False)
     print(f"\nWrote group_stats.csv")
 
     print("\nPer-family table (sorted by snr_median desc):")
     cols = ["family", "n_tasks", "snr_median", "snr_mean", "snr_max",
-            "curation_category", "source_origin"]
-    with pd.option_context("display.max_colwidth", 36, "display.width", 140):
+            "curation_category", "source_origin", "format", "n_options",
+            "passage"]
+    with pd.option_context("display.max_colwidth", 36, "display.width", 160):
         print(per_family[cols].to_string(index=False))
 
 

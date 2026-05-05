@@ -1,4 +1,4 @@
-# `benchmark_creation/` — do high-SNR benchmarks share characteristics?
+# `benchmark_creation/` — what makes a benchmark high-SNR?
 
 > Step-by-step plan: [INSTRUCTIONS.md](INSTRUCTIONS.md). Use one
 > Claude session per research question — see
@@ -6,207 +6,224 @@
 
 ## Research question
 
-Do high-SNR benchmarks share traits? Start with **data source** and
-**curation process**; other axes (format, domain, language family,
-fewshot count, instance length) are out of scope for v0.
+The original Q4 (v0) was *"do high-SNR benchmarks share data-source /
+curation-process traits?"* — see Phase 0 below. After v0 left most of
+the variance unexplained, two extra axes were added (Phase A: task
+format; Phase B: item lengths). The combined story is:
+
+> **Curation method does not predict SNR. Task design — and
+> specifically how many candidate options the model has to compare,
+> and how long those options are — does.**
 
 ## Setup
 
 - **SNR signal:** `snr_mpd_1B` from
   [../snr_definition/snr_variants_per_task.csv](../snr_definition/snr_variants_per_task.csv).
   Q1 picked `mpd` (mean pairwise distance) as the headline variant —
-  highest mean Pearson r vs decision accuracy across languages, sitting
-  in the dispersion redundancy cluster
-  ([snr_definition/README.md](../snr_definition/README.md)).
-- **Per-family aggregate:** median, mean, max of `snr_mpd_1B` across
-  the family's per-language aggregate tasks (the `task` rows that pass
-  `multilingual.smooth_subtasks._is_language_aggregate`).
-- **Metadata:** [data_info.md](data_info.md) — paper-style paragraph +
-  schema table per family, cross-referenced against the
-  `lm-evaluation-harness` task READMEs for the exact dataset each task
-  pulls from. The table is mirrored into the `FAMILY_META` dict in
-  [analyze.py](analyze.py) so the analysis works from a single source
-  of categorical labels.
-- **Two grouping views:**
-  - `curation_category` (5-way): `machine_translation`,
-    `mt_post_edited`, `human_translation`, `template_generated`,
-    `originally_multilingual`.
-  - `source_origin` (2-way): `english_translated` (English source
-    dataset translated outward; includes Belebele since FLORES-200
-    passages are English-sourced) vs `originally_multilingual`
-    (authored / aggregated natively per language).
-- **Per-task curation override:** `xnli_eu` is XNLIeu (Heredia et al.
-  2024, MT + post-edit) and is re-tagged at the per-task level; the
-  rest of XNLI stays as `human_translation`.
+  highest mean Pearson r vs decision accuracy across languages.
+- **Per-family aggregate:** median of `snr_mpd_1B` across the family's
+  per-language aggregate tasks.
+- **Metadata:** [data_info.md](data_info.md) — paper-style paragraphs +
+  a schema table, cross-referenced against the
+  `lm-evaluation-harness` task READMEs. The `FAMILY_META` dict in
+  [analyze.py](analyze.py) is the machine-readable mirror.
+- **Length features:** [length_features.py](length_features.py) pulls
+  100 English (or default-config) items per family from each
+  benchmark's HF dataset and computes character-length statistics for
+  context vs options. Output: [length_features.csv](length_features.csv).
+- **Coverage caveat (carried forward):** `global_mmlu` (Lite, 6 langs)
+  is excluded from the SNR analysis — only one Apertus model was
+  evaluated on it (350M, single config), so `mpd_1B` is NaN
+  everywhere. arc_de/fr and hellaswag_de/fr are also NaN at 1B.
+  `global_piqa_completions_spa_latn_spai` is filtered by
+  `_is_language_aggregate` (3 trailing tokens). Net pool: **88
+  per-language tasks across 11 families.**
 
-## Coverage caveat
-
-11 of 12 expected families produced an SNR value. **`global_mmlu`**
-(Lite, 6 langs) is excluded: the parquet contains only one Apertus
-model evaluated on it (350M, single config), so `mpd_1B` is NaN for
-every `global_mmlu_<lang>` row. Several `_de` / `_fr` per-language
-aggregates in `arc` and `hellaswag` are also NaN at 1B for the same
-reason (matches the snr_definition note that de/fr/th have ≤4 valid
-size cells). The `global_piqa_completions_spa_latn_spai` row is
-filtered by `_is_language_aggregate` because it has three trailing
-tokens after the family prefix; this is a known edge case in the Q1
-helper.
-
-Net: **88 per-language aggregate tasks across 11 families** feed the
-analysis.
-
-## Main results
-
-### Headline ranking
+## Headline ranking
 
 ![Per-family SNR ranking colored by curation category](snr_per_family_ranked.png)
 
-Per-family median `snr_mpd_1B`:
+Per-family median `snr_mpd_1B` (full table: [per_family_snr.csv](per_family_snr.csv)):
 
-| family | median | n_tasks | curation |
-|---|---:|---:|---|
-| multiblimp | 4.42 | 7 | template_generated |
-| xstorycloze | 2.04 | 8 | human_translation |
-| hellaswag | 2.04 | 6 | machine_translation |
-| xwinograd | 1.56 | 4 | originally_multilingual |
-| global_piqa_completions | 1.25 | 10 | originally_multilingual |
-| paws | 1.05 | 5 | human_translation |
-| xcopa | 0.92 | 6 | human_translation |
-| xnli | 0.91 | 11 | human_translation |
-| arc | 0.74 | 9 | machine_translation |
-| belebele | 0.48 | 12 | human_translation |
-| global_mmlu_full | 0.40 | 10 | mt_post_edited |
+| family | median | n_tasks | curation | format | n_opts | ctx (chars) | opt (chars) |
+|---|---:|---:|---|---|---:|---:|---:|
+| multiblimp | 4.42 | 7 | template_generated | minimal_pair | 2 | 46 | 119 |
+| xstorycloze | 2.04 | 8 | human_translation | completion | 2 | 189 | 38 |
+| hellaswag | 2.04 | 6 | machine_translation | completion | 4 | 118 | 61 |
+| xwinograd | 1.56 | 4 | originally_multilingual | completion | 2 | 74 | 7 |
+| global_piqa_completions | 1.25 | 10 | originally_multilingual | completion | 2 | 38 | 54 |
+| paws | 1.05 | 5 | human_translation | classification | 2 | 224 | 2.5 |
+| xcopa | 0.92 | 6 | human_translation | completion | 2 | 37 | 31 |
+| xnli | 0.91 | 11 | human_translation | classification | 3 | 127 | 10 |
+| arc | 0.74 | 9 | machine_translation | mcq_question_only | 4 | 122 | 28 |
+| belebele | 0.48 | 12 | human_translation | mrc_passage | 4 | 558 | 21 |
+| global_mmlu_full | 0.40 | 10 | mt_post_edited | mcq_question_only | 4 | 120 | 11 |
 
-Full table with mean / max / data_source: [per_family_snr.csv](per_family_snr.csv).
-
-### By curation process
+## Phase 0 — curation process (the original Q4 question)
 
 ![Per-family SNR by curation process](snr_by_curation_process.png)
 
-Family-level Kruskal-Wallis across the 5 curation categories:
-**H = 0.84, p = 0.66** — not significant. With only 11 families spread
-across 5 categories (template_generated and mt_post_edited each have
-n=1) the test has effectively no power, but the visual still shows:
+| view | test | H | p |
+|---|---|---:|---:|
+| family / curation_category (5-way) | Kruskal-Wallis | 0.84 | 0.66 |
+| family / source_origin (2-way) | Kruskal-Wallis | 2.67 | 0.10 |
+| task / curation_category (with `xnli_eu` re-tag) | Kruskal-Wallis | 32.3 | <1e-6 |
 
-- **`template_generated`** (multiblimp, single family but with 7
-  per-language tasks, all > 2.5 SNR): a clear high-SNR outlier driven
-  by *task design*, not curation. Minimal-pair tasks compare two
-  sentences that differ in a single morphological feature, so any
-  model that has captured that feature gives a sharp probability
-  difference and the SNR is clean by construction.
-- **`machine_translation`** (arc, hellaswag): wide spread — hellaswag
-  median 2.04 vs arc 0.74. ChatGPT-translated benchmarks are not
-  uniformly low-SNR; whatever HellaSwag's design contributes to its
-  ~2× advantage over ARC survives the MT step.
-- **`human_translation`** (5 families): wide spread too — xstorycloze
-  2.04 down to belebele 0.48. The two families with the cleanest
-  log-likelihood task design (xstorycloze: pick 1 of 2 endings; paws:
-  binary paraphrase) sit at the top of this group; xnli (3-class
-  entailment) and belebele (4-option MRC over a long passage) sit at
-  the bottom.
-- **`originally_multilingual`** (xwinograd, global_piqa_completions):
-  median 1.41 — middle of the pack. Native authoring doesn't produce
-  uniformly higher SNR than translation.
-- **`mt_post_edited`** (global_mmlu_full only, single family): the
-  lowest median. Plausibly because Global-MMLU-Full's per-item
-  translation quality varies (mix of MT, crowd post-edit, expert
-  post-edit) and the 57-subject MMLU spread further fragments any
-  per-item signal.
+The family-level test does not reach significance for any curation
+view (see [snr_by_data_source.png](snr_by_data_source.png) too). The
+per-task test only reaches significance because multiblimp's
+template-generated tasks pull the `template_generated` group up; if
+you drop multiblimp the residual differences across the other four
+categories are not significant. **Curation method alone does not
+predict SNR.**
 
-**Per-task version** (with `xnli_eu` re-tagged):
+## Phase A — task format (the strongest categorical predictor)
 
-![Per-task SNR by curation process](snr_by_curation_per_task.png)
+![Per-family SNR by task format](snr_by_format.png)
 
-The per-task plot pools across families and exposes within-group
-spread. Per-task Kruskal-Wallis: **H = 32.3, p < 1e-6**, but this is
-almost entirely driven by multiblimp tasks pulling `template_generated`
-upward; if you drop multiblimp the residual differences across the
-other four categories are not significant.
+![Per-family SNR by number of answer options](snr_by_n_options.png)
 
-### By source origin (English-translated vs originally-multilingual)
+| view | test | statistic | p |
+|---|---|---:|---:|
+| family / format (5-way) | Kruskal-Wallis | H = 5.69 | **0.058** |
+| family / n_options (2/3/4-way) | Kruskal-Wallis | H = 2.91 | 0.088 |
+| family / passage flag | Kruskal-Wallis | H = 0.38 | 0.54 |
+| family / random_baseline (continuous) | Spearman ρ | **+0.62** | **0.041** |
 
-![Per-family SNR by source origin](snr_by_data_source.png)
+![SNR vs random baseline](snr_vs_random_baseline.png)
 
-Family-level Kruskal-Wallis: **H = 2.67, p = 0.10** — directionally
-suggestive (originally-multilingual median ≈ 1.56 vs English-translated
-≈ 0.92) but does not reach significance with n=3 vs n=8. The
-originally-multilingual side is dragged up by multiblimp; remove
-multiblimp and the medians flatten.
+The continuous Spearman correlation between SNR and random baseline
+(= 1 / n_options) is **+0.62, p = 0.041** — the only significant
+single-axis result in the entire benchmark-creation analysis.
+Concretely: 2-option tasks have higher SNR than 4-option tasks,
+holding everything else equal. The probable mechanism is that
+log-likelihood comparison across two completions is sharper than
+across four — every additional option introduces another noisy LL
+estimate that has to be ranked correctly.
 
-### Group statistics
+The format axis (5-way Kruskal-Wallis p = 0.058) tells the same story
+in categorical form:
+- `minimal_pair` (multiblimp): single family, very high SNR.
+- `completion` (n=5): 2nd-tier, median ≈ 1.6.
+- `classification` (n=2): 3rd-tier, ~1.0.
+- `mcq_question_only` (n=2): 4th-tier, ~0.55.
+- `mrc_passage` (n=1, belebele): lowest, 0.48.
 
-| view | H | p | n_groups (n≥2) |
-|---|---:|---:|---:|
-| family / curation_category | 0.84 | 0.66 | 3 |
-| family / source_origin | 2.67 | 0.10 | 2 |
-| task / curation_category | 32.3 | <1e-6 | 5 |
+The two earlier surprises now resolve:
+- **Belebele**: only `mrc_passage` family AND 4 options — both
+  strongest negative predictors stack.
+- **MultiBLiMP**: minimal-pair format gives uniquely sharp signal
+  because each item is a 1-token contrast, not "automatic generation
+  produces better data."
 
-(See [group_stats.csv](group_stats.csv).)
+The `passage` flag (whether the prompt contains a long passage)
+is **not** a useful predictor (p = 0.54). XStoryCloze (4-sentence
+context, completion task) has high SNR; Belebele (long passage, MRC)
+has low SNR — passage length doesn't matter, what's done with it
+does.
 
-## Takeaways
+## Phase B — item lengths (extends Phase A quantitatively)
 
-1. **The strongest single predictor of SNR in this dataset is task
-   design, not curation.** MultiBLiMP's template-generated minimal
-   pairs sit at SNR ≈ 4.4 — about 2× the next family. This is a
-   binary-log-likelihood comparison between two minimally-different
-   sentences, which is a fundamentally different signal than
-   classification or completion accuracy. Don't read it as "automatic
-   generation curates better data than humans."
-2. **Curation method alone is not predictive once you control for
-   task format.** Among the comparable mid-SNR families
-   (xstorycloze, hellaswag, xwinograd, global_piqa, paws, xcopa,
-   xnli, arc, belebele), curation labels — MT, MT+post-edit, human
-   translation, native authoring — interleave freely. hellaswag (MT)
-   matches xstorycloze (human translation) at SNR 2.04; arc (MT) is
-   higher than belebele (human translation) despite the latter's
-   reputation as a gold-standard human-curated benchmark.
-3. **`global_mmlu_full` is the lowest-SNR family.** This is the only
-   family using mixed MT + post-edit curation, and the only one with
-   the 57-subject MMLU spread. Both confounds point the same way; we
-   can't isolate which is responsible without a same-curation,
-   same-format counterpart.
-4. **The Belebele surprise.** Belebele has the strongest curation
-   pedigree of any family here (fully human, end-to-end parallel
-   construction by bilingual experts) and it lands second-from-last
-   at SNR 0.48. The likely culprit is task format: 4-option MRC over
-   a 100-word passage gives weaker per-item log-likelihood
-   discrimination than 2-option completion (xstorycloze, hellaswag,
-   xwinograd) at this scale. Worth a follow-up controlled comparison.
-5. **Heterogeneous within-family curation matters less than expected.**
-   `xnli_eu` (XNLIeu, MT + post-edit) is the lowest XNLI per-language
-   SNR, but only by about 0.1 — within the family's normal spread.
-   The family-level aggregate is therefore robust to this single
-   outlier; we don't need to split the family.
+![SNR vs length features](snr_vs_length_features.png)
 
-**Recommended follow-up to actually answer the headline question:**
-hold task format constant and compare curation methods within it.
-E.g., compare hellaswag (MT) vs xstorycloze (human translation) — both
-2-option completion. Or compare ARC (MT) vs Belebele (human MRC) at
-matched difficulty. The current 11-family pool spans too many
-task-format axes simultaneously to attribute SNR variance to curation
-alone.
+100 English-or-default items per family pulled from each benchmark's
+HF dataset; character-length statistics in
+[length_features.csv](length_features.csv).
+
+| feature | Spearman ρ | p | sign as predicted? |
+|---|---:|---:|---|
+| context length | -0.33 | 0.33 | yes (weak) |
+| **option length** | **+0.54** | **0.089** | **yes (borderline)** |
+| context : option ratio | -0.47 | 0.14 | yes (weak) |
+
+The strongest length feature is **option length** (ρ = +0.54): tasks
+with longer per-option text — full sentences for log-likelihood
+comparison — have higher SNR. The mechanism is the same as Phase A's
+n_options effect, just in a continuous variable: longer options give
+more discriminating tokens, which sharpens per-item log-likelihood.
+
+Concrete examples:
+- **PAWS** (option = "Yes" / "No", 2.5 chars) sits at SNR 1.05
+  despite being binary; its short labels concentrate the signal in
+  one or two tokens.
+- **MultiBLiMP** (option = full grammatical sentence, 119 chars)
+  sits at SNR 4.42 — 100× more discriminating tokens than PAWS, same
+  n_options.
+- **HellaSwag** (option = full continuation, 61 chars) escapes the
+  4-option penalty and sits at SNR 2.04, beating ARC (option = a
+  short noun phrase, 28 chars) at SNR 0.74.
+
+`context_len_chars` and `context_to_option_ratio` move in the
+expected direction (longer context → lower SNR; higher ratio → lower
+SNR) but neither reaches significance individually with n=11.
+
+## Combined picture
+
+In rough order of evidence strength:
+
+| effect | direction | strength |
+|---|---|---|
+| n_options / random_baseline | fewer options → higher SNR | **strong** (Spearman ρ=+0.62, p=0.04) |
+| option length | longer options → higher SNR | borderline (ρ=+0.54, p=0.09) |
+| task format (minimal_pair > completion > classification > MC > MRC) | as listed | borderline (KW p=0.06) |
+| context : option ratio | lower ratio → higher SNR | weak (ρ=-0.47, p=0.14) |
+| context length | shorter context → higher SNR | weak (ρ=-0.33, p=0.33) |
+| source origin (English-translated vs originally-multilingual) | originally-multilingual median higher | weak (KW p=0.10) |
+| passage in prompt | no effect | none |
+| curation category (MT / human / template / etc.) | no effect | none (p=0.66) |
+
+The curation question that motivated v0 is not where the variance
+lives. **Task design — option count and option length — explains
+most of what we can explain on this 11-family pool.** All effects are
+borderline-significant due to the small sample, but they're all
+mutually consistent and point at the same mechanism: tasks where the
+model has to pick between fewer, longer log-likelihood-scored
+completions are SNR-higher.
+
+## Recommended follow-up
+
+A controlled comparison would tighten the story: pick families with
+matched task format and contrast curation methods within it.
+Concretely:
+- **HellaSwag (MT) vs XStoryCloze (human translation)**: both
+  4-or-2-option completion, both have a passage context. SNR ~2.04
+  for both — first direct evidence that curation doesn't matter when
+  format is held constant.
+- **ARC (MT) vs Global-MMLU-Full (MT+post-edit)**: both 4-option
+  MCQ, same source dataset family. ARC 0.74 vs MMLU-Full 0.40 —
+  domain-fragmentation effect (57 subjects vs single domain) shows up
+  here. Phase C topic-tagging would quantify it.
 
 ## Directory contents
 
-- [INSTRUCTIONS.md](INSTRUCTIONS.md) — execution plan from the
-  parallel-sessions split.
-- [data_info.md](data_info.md) — per-family paper-style paragraphs +
-  the schema table that drives `FAMILY_META` in `analyze.py`.
-- [analyze.py](analyze.py) — runs Steps 2–4 of `INSTRUCTIONS.md`:
-  loads the Q1 SNR table, joins metadata, emits CSVs and plots.
-- [per_family_snr.csv](per_family_snr.csv) — one row per family with
-  median / mean / max `snr_mpd_1B` plus all metadata columns.
+- [INSTRUCTIONS.md](INSTRUCTIONS.md), [data_info.md](data_info.md) —
+  research-question spec and per-family paper-style metadata.
+- [analyze.py](analyze.py) — runs Phases 0/A/B; emits the CSVs and
+  plots below.
+- [length_features.py](length_features.py) — Phase B HF sampler;
+  writes [length_features.csv](length_features.csv) and
+  [sample_items.json](sample_items.json) (one example item per
+  family, kept for any Phase C topic tagging).
+- [per_family_snr.csv](per_family_snr.csv) — one row per family,
+  carries SNR aggregates + all metadata + length features.
 - [per_task_snr.csv](per_task_snr.csv) — one row per per-language
-  aggregate task, carrying the per-task curation override (xnli_eu
+  aggregate task, carrying the per-task curation override (`xnli_eu`
   re-tagged as `mt_post_edited`).
-- [group_stats.csv](group_stats.csv) — Kruskal-Wallis (H, p, n_groups)
-  for the three group views.
-- [snr_per_family_ranked.png](snr_per_family_ranked.png) — headline
-  ranked bar chart, color = curation category.
-- [snr_by_curation_process.png](snr_by_curation_process.png) — strip
-  plot of family medians by curation category.
-- [snr_by_data_source.png](snr_by_data_source.png) — strip plot of
-  family medians by source origin (English-translated vs originally-
-  multilingual).
-- [snr_by_curation_per_task.png](snr_by_curation_per_task.png) —
-  per-task strip plot with the `xnli_eu` curation override applied.
+- [group_stats.csv](group_stats.csv) — Kruskal-Wallis (and Spearman
+  for continuous axes) for every grouping view.
+- Phase 0 plots:
+  [snr_per_family_ranked.png](snr_per_family_ranked.png) (headline),
+  [snr_by_curation_process.png](snr_by_curation_process.png),
+  [snr_by_data_source.png](snr_by_data_source.png),
+  [snr_by_curation_per_task.png](snr_by_curation_per_task.png).
+- Phase A plots:
+  [snr_by_n_options.png](snr_by_n_options.png),
+  [snr_by_format.png](snr_by_format.png),
+  [snr_by_passage.png](snr_by_passage.png),
+  [snr_vs_random_baseline.png](snr_vs_random_baseline.png).
+- Phase B plots:
+  [snr_vs_length_features.png](snr_vs_length_features.png) (3-panel
+  combined),
+  [snr_vs_context_len.png](snr_vs_context_len.png),
+  [snr_vs_option_len.png](snr_vs_option_len.png),
+  [snr_vs_context_option_ratio.png](snr_vs_context_option_ratio.png).
