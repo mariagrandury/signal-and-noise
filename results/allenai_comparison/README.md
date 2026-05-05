@@ -124,6 +124,131 @@ AllenAI 1B DataDecide ladder. They are good candidates for
 small-scale-decision benchmarks regardless of which pretraining
 distribution you're working with.
 
+## Adding more benchmarks to Apertus (expand the shared-task universe)
+
+The headline correlation runs over **61 shared tasks** — almost entirely
+MMLU subjects + ARC + HellaSwag. AllenAI's `core` split has **178 tasks
+that Apertus does not currently evaluate**. Adding them to the Apertus
+eval suite would directly enlarge the cross-corpus comparison surface.
+Task IDs below are the **OLMES** names AllenAI uses (suffix `:mc` =
+multi-choice form, suffix `:rc` = rank-classification form). The
+[OLMES harness](https://github.com/allenai/olmes) reproduces these task
+IDs verbatim; `lm-evaluation-harness` has equivalents for most (sometimes
+under different names — e.g. `agieval_*` instead of `agi_eval_*`,
+`gsm8k_cot` for chain-of-thought variants).
+
+### `mmlu_<subject>:mc` — 53 multi-choice MMLU subjects
+
+Apertus only ran the rank-classification form (under
+`global_mmlu_full_en_<subject>`). Adding the `:mc` form on the same
+subjects would roughly double the MMLU comparison coverage on its own.
+
+`mmlu_abstract_algebra:mc, mmlu_anatomy:mc, mmlu_astronomy:mc,
+mmlu_business_ethics:mc, mmlu_clinical_knowledge:mc, mmlu_college_biology:mc,
+mmlu_college_chemistry:mc, mmlu_college_computer_science:mc,
+mmlu_college_mathematics:mc, mmlu_college_medicine:mc, mmlu_college_physics:mc,
+mmlu_computer_security:mc, mmlu_conceptual_physics:mc, mmlu_econometrics:mc,
+mmlu_electrical_engineering:mc, mmlu_elementary_mathematics:mc,
+mmlu_formal_logic:mc, mmlu_global_facts:mc, mmlu_high_school_biology:mc,
+mmlu_high_school_chemistry:mc, mmlu_high_school_computer_science:mc,
+mmlu_high_school_european_history:mc, mmlu_high_school_geography:mc,
+mmlu_high_school_government_and_politics:mc, mmlu_high_school_macroeconomics:mc,
+mmlu_high_school_mathematics:mc, mmlu_high_school_microeconomics:mc,
+mmlu_high_school_physics:mc, mmlu_high_school_psychology:mc,
+mmlu_high_school_statistics:mc, mmlu_high_school_us_history:mc,
+mmlu_high_school_world_history:mc, mmlu_human_aging:mc, mmlu_human_sexuality:mc,
+mmlu_international_law:mc, mmlu_jurisprudence:mc, mmlu_logical_fallacies:mc,
+mmlu_machine_learning:mc, mmlu_management:mc, mmlu_marketing:mc,
+mmlu_medical_genetics:mc, mmlu_miscellaneous:mc, mmlu_moral_disputes:mc,
+mmlu_moral_scenarios:mc, mmlu_nutrition:mc, mmlu_philosophy:mc,
+mmlu_prehistory:mc, mmlu_public_relations:mc, mmlu_security_studies:mc,
+mmlu_sociology:mc, mmlu_us_foreign_policy:mc, mmlu_virology:mc,
+mmlu_world_religions:mc`
+
+### `mmlu_pro` — MMLU-Pro (19 tasks)
+
+Standalone harder benchmark with category subsets. Available in both
+OLMES and `lm-evaluation-harness` (as `mmlu_pro` / `mmlu_pro_<category>`).
+
+`mmlu_pro, mmlu_pro_biology:rc, mmlu_pro_business:rc, mmlu_pro_chemistry:rc,
+mmlu_pro_computer science:rc, mmlu_pro_economics:rc, mmlu_pro_engineering:rc,
+mmlu_pro_health:rc, mmlu_pro_history:rc, mmlu_pro_law:rc, mmlu_pro_math:rc,
+mmlu_pro_other:rc, mmlu_pro_philosophy:rc, mmlu_pro_physics:rc,
+mmlu_pro_psychology:rc` plus the four `mmlu_professional_*` /
+`mmlu_professional_*:mc` pairs from the `:mc` family above.
+
+### `arc_*:mc`, `hellaswag:mc` — 3 multi-choice forms
+
+`arc_challenge:mc, arc_easy:mc, hellaswag:mc` — Apertus only has the
+rank-classification forms.
+
+### OLMES core knowledge / commonsense — 10 tasks
+
+`boolq, boolq:mc, openbookqa, openbookqa:mc, piqa:mc, commonsense_qa,
+commonsense_qa:mc, socialiqa, socialiqa:mc, winogrande, winogrande:mc,
+truthfulqa_mc1, csqa, csqa:mc`. Standard `lm-evaluation-harness` task
+IDs are `boolq`, `openbookqa`, `piqa`, `commonsense_qa`,
+`social_iqa`, `winogrande`, `truthfulqa_mc1`.
+
+### Math — 14 tasks
+
+`gsm8k, gsm_plus, gsm_symbolic_main, gsm_symbolic_p1, gsm_symbolic_p2,
+minerva_math_500, minerva_math_algebra, minerva_math_counting_and_probability,
+minerva_math_geometry, minerva_math_intermediate_algebra,
+minerva_math_number_theory, minerva_math_prealgebra, minerva_math_precalculus,
+minerva`. `lm-evaluation-harness` provides `gsm8k`, `gsm8k_cot`, the
+`hendrycks_math_*` set (Minerva is the same MATH benchmark under a
+different name).
+
+### Code — 4 tasks
+
+`codex_humaneval, codex_humanevalplus, mbpp, mbppplus`. In
+`lm-evaluation-harness`: `humaneval`, `humaneval_plus`, `mbpp`,
+`mbpp_plus`. Need code-execution sandboxing to score.
+
+### BBH (Big-Bench Hard) — 27 subsets
+
+`bbh_boolean_expressions, bbh_causal_judgement, bbh_date_understanding,
+bbh_disambiguation_qa, bbh_dyck_languages, bbh_formal_fallacies,
+bbh_geometric_shapes, bbh_hyperbaton, bbh_logical_deduction_five_objects,
+bbh_logical_deduction_seven_objects, bbh_logical_deduction_three_objects,
+bbh_movie_recommendation, bbh_multistep_arithmetic_two, bbh_navigate,
+bbh_object_counting, bbh_penguins_in_a_table,
+bbh_reasoning_about_colored_objects, bbh_ruin_names,
+bbh_salient_translation_error_detection, bbh_snarks, bbh_sports_understanding,
+bbh_temporal_sequences, bbh_tracking_shuffled_objects_five_objects,
+bbh_tracking_shuffled_objects_seven_objects,
+bbh_tracking_shuffled_objects_three_objects, bbh_web_of_lies, bbh_word_sorting`.
+In `lm-evaluation-harness`: `bbh_*` matches.
+
+### AGI Eval — 19 subsets
+
+`agi_eval, agi_eval_aqua-rat:mc, agi_eval_aqua-rat:rc,
+agi_eval_gaokao-english:mc, agi_eval_gaokao-english:rc,
+agi_eval_logiqa-en:mc, agi_eval_logiqa-en:rc, agi_eval_lsat-ar:mc,
+agi_eval_lsat-ar:rc, agi_eval_lsat-lr:mc, agi_eval_lsat-lr:rc,
+agi_eval_lsat-rc:mc, agi_eval_lsat-rc:rc, agi_eval_sat-en-without-passage:mc,
+agi_eval_sat-en-without-passage:rc, agi_eval_sat-en:mc, agi_eval_sat-en:rc,
+agi_eval_sat-math:mc, agi_eval_sat-math:rc`. In
+`lm-evaluation-harness` these are `agieval_<task>` (single underscore,
+no `:mc`/`:rc` split — pick the metric you want).
+
+### Generative QA — 8 tasks
+
+`autobencher, autobencher:mc, drop, medmcqa, medmcqa:mc, squad, triviaqa,
+jeopardy`. In `lm-evaluation-harness`: `drop`, `squad`, `triviaqa`,
+`medmcqa` are direct matches.
+
+### Not recommended (harness flow / aggregate / not benchmarks)
+
+- **`paloma_*` (13 tasks)** — perplexity / bytes-per-byte; needs the
+  Paloma-specific harness flow.
+- **`multitask_*` (4 tasks)** — aggregates of other benchmarks already
+  covered above.
+- **`custom_loss_*` (3 tasks)** — direct training-loss probes, not
+  evaluation benchmarks in the usual sense.
+- **`copycolors:mc`** — niche AllenAI test, low value.
+
 ## Directory contents
 
 | file | description |
