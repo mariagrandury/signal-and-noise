@@ -46,7 +46,12 @@ TARGET_SIZE = "1B"
 ALL_SIZES = SMALL_SIZES + [TARGET_SIZE]
 LAST_N = 5
 CKPT_DA_EARLY_STEPS = [6000, 18000, 28000]
+SEED = 1904  # Apertus pretrains all share this seed.
 OUT_DIR = PLOT_DIR / "snr_definition"
+
+# Dedup set for missing-ckpt warnings — log each (size, early_step, mix)
+# combination at most once across the whole run, regardless of task.
+_LOGGED_MISSING_CKPTS: set = set()
 
 
 def _safe(fn, *args, **kwargs):
@@ -59,10 +64,16 @@ def _safe(fn, *args, **kwargs):
 
 # --- decision accuracy ------------------------------------------------------
 
-def compute_size_decision_accuracy(df, task, small_size, target_size=TARGET_SIZE):
-    """DA across model sizes: small_size@last vs target_size@last (upstream)."""
-    scores_small = get_slice(df, size=small_size, task=task)
-    scores_target = get_slice(df, size=target_size, task=task)
+def compute_size_decision_accuracy(df, task, small_size, target_size=TARGET_SIZE,
+                                   seed=None):
+    """DA across model sizes: small_size@last vs target_size@last (upstream).
+
+    Pass ``seed`` to pin the slice to a single training seed — required
+    on multi-seed corpora (e.g. AllenAI DataDecide); harmless on the
+    single-seed Apertus corpus.
+    """
+    scores_small = get_slice(df, size=small_size, task=task, seed=seed)
+    scores_target = get_slice(df, size=target_size, task=task, seed=seed)
     if scores_small.empty or scores_target.empty:
         return float("nan")
     scores_small = scores_small.loc[scores_small.groupby("mix")["step"].idxmax()]
@@ -75,18 +86,31 @@ def compute_size_decision_accuracy(df, task, small_size, target_size=TARGET_SIZE
     return decision_acc_fast(s.to_numpy(), t.to_numpy())
 
 
-def compute_ckpt_decision_accuracy(df, task, size, early_step):
-    """DA within a single size: mix ranking at exactly `early_step` vs the
-    same size's max-step ckpt. Mixes lacking the exact early step are
-    skipped; returns NaN if fewer than 2 mixes survive.
+def compute_ckpt_decision_accuracy(df, task, size, early_step, seed=None):
+    """DA within a single size: mix ranking at exactly ``early_step`` vs the
+    same size's max-step ckpt.
+
+    Requires the *exact* early-step row per mix — mixes lacking that
+    step are skipped silently. Set ``CKPT_DA_EARLY_STEPS`` to values
+    that match the eval cadence (every 6000 iters for the current
+    Apertus runs); a missing ckpt is logged once per
+    ``(size, early_step, mix)`` combination across the whole run. If
+    fewer than 2 mixes survive, returns NaN.
+
+    Pass ``seed`` to pin the slice to a single training seed.
     """
-    scores = get_slice(df, size=size, task=task)
+    scores = get_slice(df, size=size, task=task, seed=seed)
     if scores.empty:
         return float("nan")
     early, late, mixes = [], [], []
     for mix, g in scores.groupby("mix"):
         g_early = g[g["step"] == early_step]
         if g_early.empty:
+            key = (size, early_step, mix)
+            if key not in _LOGGED_MISSING_CKPTS:
+                _LOGGED_MISSING_CKPTS.add(key)
+                print(f"  ckpt-DA: no row at step={early_step} for "
+                      f"size={size} mix={mix} (first seen on task={task}) — skipped")
             continue
         max_row = g.loc[g["step"].idxmax()]
         early.append(float(g_early["primary_score"].iloc[0]))
@@ -94,15 +118,12 @@ def compute_ckpt_decision_accuracy(df, task, size, early_step):
         mixes.append(mix)
     if len(mixes) < 2:
         return float("nan")
-    order = np.argsort(mixes)
-    early = np.asarray(early)[order]
-    late = np.asarray(late)[order]
-    return decision_acc_fast(early, late)
+    return decision_acc_fast(np.asarray(early), np.asarray(late))
 
 
 # --- per-mix arrays for snr_variants ----------------------------------------
 
-def per_mix_inputs(df, task, size, last_n=LAST_N):
+def per_mix_inputs(df, task, size, last_n=LAST_N, seed=None):
     """Build the four per-mix arrays expected by snr_variants aggregators.
 
     Mirrors analysis/snr_variants.ipynb cells 5+7:
@@ -111,13 +132,20 @@ def per_mix_inputs(df, task, size, last_n=LAST_N):
       data_noise         = cross-mix std of `data_scores`, broadcast as a
                            constant array of the same length
       data_scores_last_n = per-mix mean of the last `last_n` ckpts
+
+    Pass ``seed`` to pin the slice to a single training seed — required
+    on multi-seed corpora (else multi-seed rows interleave per step and
+    the trailing-``last_n`` window mixes seeds). Mixes with fewer than
+    2 ckpts are dropped (they can't contribute step_noise) and we
+    require ≥ 2 surviving mixes overall.
     """
-    scores_df = get_slice(df, size=size, task=task).sort_values("step")
+    scores_df = get_slice(df, size=size, task=task, seed=seed).sort_values("step")
     if scores_df.empty:
         return None
     grouped = scores_df.groupby("mix")["primary_score"].apply(list)
     last_arrays = [np.asarray(s[-last_n:], dtype=float) for s in grouped]
-    if len(last_arrays) < 2 or any(len(a) < 2 for a in last_arrays):
+    last_arrays = [a for a in last_arrays if len(a) >= 2]
+    if len(last_arrays) < 2:
         return None
     step_noise = np.array([np.std(a) for a in last_arrays])
     data_scores = np.array([a[-1] for a in last_arrays])
@@ -216,15 +244,15 @@ def run():
 
         for s in SMALL_SIZES:
             row[f"decision_acc_size_{s}"] = _safe(
-                compute_size_decision_accuracy, df, task, s
+                compute_size_decision_accuracy, df, task, s, seed=SEED
             )
         for early in CKPT_DA_EARLY_STEPS:
             for s in ALL_SIZES:
                 row[f"decision_acc_ckpt_{early}_{s}"] = _safe(
-                    compute_ckpt_decision_accuracy, df, task, s, early
+                    compute_ckpt_decision_accuracy, df, task, s, early, seed=SEED
                 )
 
-        size_inputs = {s: per_mix_inputs(df, task, s) for s in ALL_SIZES}
+        size_inputs = {s: per_mix_inputs(df, task, s, seed=SEED) for s in ALL_SIZES}
         for fd in AGGREGATION_FUNCTIONS:
             key = variant_key(fd)
             for s in ALL_SIZES:

@@ -273,7 +273,7 @@ def top_benchmarks_per_language(df: pd.DataFrame, variant: str,
     df = df.copy()
     df["language"] = [assign_language(t) for t in df.index]
     df = df[df["language"] != "??"]
-    da_size_col = "decision_acc_size_600M"
+    da_size_col = f"decision_acc_size_{size}"
     # Mean ckpt-DA across the 3 early-step pairs at the same model size
     # (1B; the same size we use for SNR ranking).
     ckpt_cols = [f"decision_acc_ckpt_{e}_{size}"

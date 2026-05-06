@@ -54,20 +54,34 @@ VARIANT_TITLES = {variant_key(fd): fd["title"] for fd in AGGREGATION_FUNCTIONS}
 
 # --- task name aliasing ----------------------------------------------------
 
-def _canonicalise_apertus_task(t: str) -> str:
-    """Map Apertus task names to AllenAI's vanilla MMLU names.
+# Direct (Apertus → AllenAI) aliases for tasks that are the same eval
+# under different lm-eval task keys. The MMLU family is handled
+# separately below since it's a per-subject prefix rewrite, not a single
+# rename.
+_TASK_ALIASES: dict[str, str] = {
+    "commonsense_qa": "csqa",
+    # Add more obvious mismatches here as we discover them.
+}
 
-    Apertus only ran the multilingual `global_mmlu_full_en_<subject>` view
-    of MMLU on a full ckpt-series — the vanilla `mmlu_<subject>` rows are
+
+def _canonicalise_apertus_task(t: str) -> str:
+    """Map Apertus task names to their AllenAI equivalents.
+
+    MMLU: Apertus only ran the multilingual ``global_mmlu_full_en_<subject>``
+    view on a full ckpt-series — the vanilla ``mmlu_<subject>`` rows are
     single-shot and have no SNR. AllenAI exposes the same content under
-    the vanilla `mmlu_<subject>` names. Treating the two as the same task
-    is what unlocks ~60 MMLU subjects for the cross-corpus comparison.
+    the vanilla ``mmlu_<subject>`` names, so we alias. Note: Apertus's
+    ``global_mmlu_full_en`` is the **Cohere Full** translation of MMLU,
+    not the original — see ``agreement.md`` for the methodological
+    caveat.
+
+    Other one-off renames live in ``_TASK_ALIASES``.
     """
     if t == "global_mmlu_full_en":
         return "mmlu"
     if t.startswith("global_mmlu_full_en_"):
         return "mmlu_" + t[len("global_mmlu_full_en_"):]
-    return t
+    return _TASK_ALIASES.get(t, t)
 
 
 def _load_apertus_with_alias() -> pd.DataFrame:
@@ -327,6 +341,10 @@ def run() -> None:
     agreement_df = pd.DataFrame(rows)
 
     # Write agreement.md
+    aliased_mmlu = sorted(t for t in shared if t == "mmlu" or t.startswith("mmlu_"))
+    other_aliases = sorted(
+        f"{src} → {dst}" for src, dst in _TASK_ALIASES.items() if dst in shared
+    )
     md_lines = [
         "# Top-K reliability agreement",
         "",
@@ -334,6 +352,27 @@ def run() -> None:
         f"Apertus SNR column: `snr_{best_variant}_{APERTUS_SIZE}`  ·  "
         f"AllenAI SNR column: `snr_{best_variant}_{ALLENAI_SIZE}`",
         f"Shared-task universe: **{len(shared)}** tasks.",
+        "",
+        "## ⚠️ Methodological caveat — MMLU aliasing",
+        "",
+        "Apertus's `global_mmlu_full_en[_<subject>]` rows are aliased to "
+        "AllenAI's `mmlu[_<subject>]` rows so the cross-corpus comparison "
+        "can use the ~60 MMLU subjects. **The two are not the same content.** "
+        "Apertus runs the **Cohere Full** translation/post-edit of MMLU "
+        "(English split), AllenAI runs the original Hendrycks et al. MMLU. "
+        "Question wording, post-edits, and sample coverage may differ. "
+        "Plan: re-run the original `mmlu` lm-eval task on the multilingual "
+        "Apertus checkpoints; once that lands, drop the alias and compare "
+        "like-for-like.",
+        "",
+        f"MMLU rows aliased into the shared set: **{len(aliased_mmlu)}** "
+        f"of {len(shared)} total.",
+        "",
+        "Other Apertus → AllenAI aliases that hit the shared set: "
+        + (", ".join(f"`{a}`" for a in other_aliases) if other_aliases else "_none_")
+        + ".",
+        "",
+        "## Top-K agreement",
         "",
         "| K | n_intersection | intersection / K | Jaccard | Shared top-K tasks |",
         "|---|---:|---:|---:|---|",

@@ -196,8 +196,17 @@ def _signal_noise(combined: np.ndarray, mix_rows: dict[str, list[int]]
     return float(signal), float(noise), float(signal / noise)
 
 
+def _drop_sparse_mixes(mix_rows: dict[str, list[int]],
+                       min_ckpts: int = 2) -> dict[str, list[int]]:
+    """Drop mixes with fewer than ``min_ckpts`` ckpts — same gate as the
+    aggregate-level ``_signal_noise``: a mix with one ckpt contributes
+    no within-mix step variance so its inclusion biases pooled.std()."""
+    return {m: rs for m, rs in mix_rows.items() if len(rs) >= min_ckpts}
+
+
 def _per_sample_snr(A: np.ndarray, mix_rows: dict[str, list[int]]) -> np.ndarray:
     """Vectorised per-sample SNR. Shape (n_samples,)."""
+    mix_rows = _drop_sparse_mixes(mix_rows)
     mixes = list(mix_rows.keys())
     if len(mixes) < 2:
         return np.full(A.shape[1], np.nan, dtype=np.float64)
@@ -220,7 +229,13 @@ def _per_sample_snr(A: np.ndarray, mix_rows: dict[str, list[int]]) -> np.ndarray
 
 def _variance_prefilter_mask(A: np.ndarray, mix_rows: dict[str, list[int]]
                              ) -> np.ndarray:
-    """True for samples whose per-mix mean varies across mixes (not dead)."""
+    """True for samples whose per-mix mean varies across mixes (not dead).
+
+    Mixes with <2 ckpts are dropped first (matches ``_per_sample_snr``);
+    a sample whose surviving mix-means are all equal is "dead" and
+    excluded from the SNR sweep.
+    """
+    mix_rows = _drop_sparse_mixes(mix_rows)
     mixes = list(mix_rows.keys())
     if len(mixes) < 2:
         return np.zeros(A.shape[1], dtype=bool)

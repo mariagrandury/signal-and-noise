@@ -16,11 +16,20 @@ Run from the repo root:
 from __future__ import annotations
 
 import json
+import logging
 import statistics as stat
+import sys
 from pathlib import Path
 
 import pandas as pd
 from datasets import load_dataset
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    stream=sys.stderr,
+)
+log = logging.getLogger("length_features")
 
 
 def _load_parquet(repo: str, config: str, split: str) -> list[dict]:
@@ -113,7 +122,8 @@ LOADERS = {
 
 
 def measure(family: str, spec: dict, n: int) -> tuple[dict, dict]:
-    print(f"  {family}: {spec['repo']} / {spec['config']} / {spec['split']}")
+    log.info("loading %s: %s / %s / %s",
+             family, spec["repo"], spec["config"], spec["split"])
     if spec.get("loader") == "parquet":
         records = _load_parquet(spec["repo"], spec["config"], spec["split"])
         samples = records[:n]
@@ -125,6 +135,12 @@ def measure(family: str, spec: dict, n: int) -> tuple[dict, dict]:
             if i >= n:
                 break
             samples.append(x)
+
+    if not samples:
+        raise RuntimeError(
+            f"no samples returned from {spec['repo']}/{spec['config']}/{spec['split']} "
+            f"(loader={spec.get('loader', 'streaming')}); cannot compute length features"
+        )
 
     ctx_lens = [len(spec["ctx"](x)) for x in samples]
     opts_per = [spec["opts"](x) for x in samples]
@@ -153,23 +169,36 @@ def measure(family: str, spec: dict, n: int) -> tuple[dict, dict]:
 def main() -> None:
     rows = []
     samples = []
+    failures: list[tuple[str, str]] = []
     for family, spec in LOADERS.items():
         try:
             row, sample = measure(family, spec, N_SAMPLES)
         except Exception as e:
-            print(f"    FAIL: {type(e).__name__}: {e}")
+            log.exception("failed to measure %s (%s/%s/%s): %s",
+                          family, spec["repo"], spec["config"], spec["split"], e)
+            failures.append((family, f"{type(e).__name__}: {e}"))
             continue
         rows.append(row)
         samples.append(sample)
 
     df = pd.DataFrame(rows)
     df.to_csv(HERE / "length_features.csv", index=False)
-    print(f"\nWrote length_features.csv ({len(df)} families)")
+    log.info("wrote length_features.csv (%d families, %d failures)",
+             len(df), len(failures))
     print(df.to_string(index=False))
 
     (HERE / "sample_items.json").write_text(json.dumps(samples, indent=2,
                                                        ensure_ascii=False))
-    print(f"Wrote sample_items.json ({len(samples)} samples)")
+    log.info("wrote sample_items.json (%d samples)", len(samples))
+
+    if failures:
+        log.warning("%d family/families could not be measured:", len(failures))
+        for fam, err in failures:
+            log.warning("  %s: %s", fam, err)
+        # Also persist failures so downstream consumers know what's missing.
+        (HERE / "length_features_failures.txt").write_text(
+            "\n".join(f"{fam}\t{err}" for fam, err in failures) + "\n"
+        )
 
 
 if __name__ == "__main__":

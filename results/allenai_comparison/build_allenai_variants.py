@@ -76,14 +76,31 @@ def load_allenai_core() -> pd.DataFrame:
     return df.sort_values(["size", "mix", "step", "task"]).reset_index(drop=True)
 
 
+def _canonical_seed(df: pd.DataFrame) -> int | None:
+    """Pick the most-common seed in the slice — used to pin per-mix
+    aggregations to a single training seed on multi-seed corpora. Returns
+    None if the seed column is absent or all-NaN; passing None to
+    ``per_mix_inputs`` then disables seed filtering (legacy behavior)."""
+    if "seed" not in df.columns:
+        return None
+    seeds = df["seed"].dropna()
+    if seeds.empty:
+        return None
+    return int(seeds.mode().iloc[0])
+
+
 def run() -> Path:
     df = load_allenai_core()
     tasks = sorted(df["task"].unique())
+    seed = _canonical_seed(df)
+    seed_counts = (df["seed"].value_counts(dropna=False).to_dict()
+                   if "seed" in df.columns else {})
     print(
         f"Loaded {len(df):,} rows | "
         f"{df['model'].nunique()} models | "
         f"{df['mix'].nunique()} mixes | "
-        f"{len(tasks)} tasks"
+        f"{len(tasks)} tasks | "
+        f"canonical seed: {seed} (counts: {seed_counts})"
     )
 
     rows: list[dict] = []
@@ -93,11 +110,12 @@ def run() -> Path:
         # Size-DA: rank at small@last vs target@last.
         for s in SMALL_SIZES:
             row[f"decision_acc_size_{s}"] = _safe(
-                compute_size_decision_accuracy, df, task, s, TARGET_SIZE
+                compute_size_decision_accuracy, df, task, s, TARGET_SIZE,
+                seed=seed,
             )
 
         # 22 variants × 4 sizes × 3 stats.
-        size_inputs = {s: per_mix_inputs(df, task, s) for s in ALL_SIZES}
+        size_inputs = {s: per_mix_inputs(df, task, s, seed=seed) for s in ALL_SIZES}
         for fd in AGGREGATION_FUNCTIONS:
             key = variant_key(fd)
             for s in ALL_SIZES:

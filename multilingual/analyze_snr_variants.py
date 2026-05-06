@@ -150,18 +150,17 @@ def da_ckpt_col(early_step: int, size: str) -> str:
 # --- column iterator per DA definition --------------------------------------
 
 def da_size_pairs():
-    """Yield (col_label, snr_size, da_col, sizes_to_pool) per DA-size col.
+    """Yield (col_label, snr_sizes, da_col) per DA-size col.
 
     For DA-size each column has exactly one (small) size and we plot its
     SNR against its own DA — no pooling.
     """
     for s in SMALL_SIZES:
-        yield (f"{s} → {TARGET_SIZE}", [s], da_size_col(s),
-               lambda size, s=s: size == s)
+        yield (f"{s} → {TARGET_SIZE}", [s], da_size_col(s))
 
 
 def da_ckpt_pairs(sizes: list[str] = None):
-    """Yield (col_label, snr_size, da_col_for_size, sizes_to_pool) per DA-ckpt col.
+    """Yield (col_label, snr_sizes, da_col_for_size) per DA-ckpt col.
 
     Pass ``sizes=[one_size]`` to restrict each panel to a single model
     size (used by the ``da_ckpt/da_ckpt_<size>/`` subfolders); pass the
@@ -172,8 +171,7 @@ def da_ckpt_pairs(sizes: list[str] = None):
     for early in CKPT_DA_EARLY_STEPS:
         def _da_col(size, early=early):
             return da_ckpt_col(early, size)
-        yield (f"ckpt {early} → max", list(sizes), _da_col,
-               lambda size: True)
+        yield (f"ckpt {early} → max", list(sizes), _da_col)
 
 
 # --- data extraction --------------------------------------------------------
@@ -216,7 +214,7 @@ def _pearson_r(xs, ys, log_x):
 def variant_col_rs(df: pd.DataFrame, variant: str, da_pairs: list) -> list[float]:
     """Per-column Pearson r between log10(SNR) and DA, for one variant."""
     out = []
-    for _label, sizes, da_fn, _ in da_pairs:
+    for _label, sizes, da_fn in da_pairs:
         d = _gather_points(df, "snr", variant, sizes, da_fn, log_x=True)
         out.append(_pearson_r(d["x"], d["y"], log_x=True))
     return out
@@ -276,7 +274,7 @@ def render_grid(df: pd.DataFrame, variants_ranked: list,
     )
     drawn = 0
     for r, (variant, rs, _mean) in enumerate(variants_ranked):
-        for c, (col_label, sizes, da_fn, _filter) in enumerate(da_pairs):
+        for c, (col_label, sizes, da_fn) in enumerate(da_pairs):
             ax = axes[r][c]
             data = _gather_points(df, "snr", variant, sizes, da_fn, log_x=True)
             n = _scatter_panel(ax, data, log_x=True, plot_fit=True,
@@ -315,13 +313,21 @@ def render_grid(df: pd.DataFrame, variants_ranked: list,
 # --- per-language gating ----------------------------------------------------
 
 def _max_valid_da_per_pair(df: pd.DataFrame, da_pairs: list) -> int:
-    """Largest count of non-NaN DA values across the panels' DA columns."""
+    """Largest count of non-NaN DA values pooled across each pair's sizes.
+
+    For pooled cross-size views (``len(sizes) > 1``) the panel data are
+    the *union* across sizes, so summing per pair (then taking the max
+    across pairs) is the right gate; using the per-cell max would skip
+    languages with enough total data spread across sizes.
+    """
     best = 0
-    for _, sizes, da_fn, _ in da_pairs:
+    for _, sizes, da_fn in da_pairs:
+        total = 0
         for s in sizes:
             col = da_fn(s) if callable(da_fn) else da_fn
             if col in df.columns:
-                best = max(best, int(df[col].notna().sum()))
+                total += int(df[col].notna().sum())
+        best = max(best, total)
     return best
 
 
@@ -340,7 +346,7 @@ def _per_language_pearson_table(df: pd.DataFrame, variants: list[str],
             continue
         for v in variants:
             xs, ys = [], []
-            for _, sizes, da_fn, _ in da_pairs:
+            for _, sizes, da_fn in da_pairs:
                 d = _gather_points(sub, "snr", v, sizes, da_fn, log_x=True)
                 xs.extend(d["x"])
                 ys.extend(d["y"])
