@@ -2,9 +2,10 @@
 
 This is a local fork of [allenai/signal-and-noise](https://github.com/allenai/signal-and-noise),
 augmented to run the SNR / decision-accuracy pipeline on the 12 **custom Apertus
-pretraining checkpoints** evaluated in the sister repo
-`swissai-evals-post-train`. The upstream README still applies for the AllenAI
-DataDecide / OLMo path; this file documents the Apertus extension.
+pretraining checkpoints** evaluated by the sister `evals/` package
+(`/iopsstor/scratch/cscs/mariagrandury/snr-multilingual/src/evals/`). The upstream
+README still applies for the AllenAI DataDecide / OLMo path; this file documents
+the Apertus extension.
 
 If you're picking this up cold, **read the upstream [README.md](README.md) first**
 to understand what signal, noise, decision accuracy, and scaling-law error mean.
@@ -19,7 +20,7 @@ helpers, but loads scores from the cluster's eval_logs tree instead of the
 HF parquet dataset.
 
 ```bash
-cd /iopsstor/scratch/cscs/mariagrandury/signal-and-noise
+cd /iopsstor/scratch/cscs/mariagrandury/snr-multilingual/src/signal-and-noise
 python multilingual/run_apertus.py
 ```
 
@@ -97,21 +98,20 @@ ckpts, or SNR computation will crash on those mixes.
             harness/eval_*/per_task/<task>/   (partial, written per-task)
 ```
 
-This tree is **populated by the `swissai-evals-post-train` repo**, not by
-this one. Every Slurm eval job writes there. We just read it.
+This tree is **populated by `src/evals/` (the eval submitter package)**, not
+by this one. Every Slurm eval job writes there. We just read it.
 
 To avoid duplicating the parser, `snr/download/apertus.py` does:
 
 ```python
-sys.path.insert(0, "/iopsstor/scratch/cscs/mariagrandury/swissai-evals-post-train")
+sys.path.insert(0, "/iopsstor/scratch/cscs/mariagrandury/snr-multilingual/src/evals")
 from scripts.push_all_results import collect, aggregate_parents
 ```
 
-If `swissai-evals-post-train/scripts/push_all_results.py` moves or its
-`collect` / `aggregate_parents` API changes, this import breaks. Both
-repos are under the same `/iopsstor/scratch/cscs/mariagrandury/` parent,
-so they should usually be in sync — but the coupling is implicit, not
-declared anywhere.
+If `src/evals/scripts/push_all_results.py` moves or its `collect` /
+`aggregate_parents` API changes, this import breaks. Both packages live
+under the same `snr-multilingual/src/` parent, so they should usually be
+in sync — but the coupling is implicit, not declared anywhere.
 
 `collect` reads both `results` and `groups` from per-task fragments so
 that aggregates like `mmlu` (which only live under `groups`) are
@@ -135,9 +135,9 @@ Computed inside `load_apertus_eval_results`:
 - Compute (FLOPs) ≈ `6 * params * tokens`, with `_PARAMS = {175M: 175e6,
   350M: 350e6, 600M: 600e6, 1B: 1.0e9}`.
 
-These approximations are the same ones used by `swissai-evals-post-train`'s
-W&B push (`MEG_TOKENS_PER_ITER = 504 * 4096`) so axes line up across the
-two pipelines.
+These approximations are the same ones used by `src/evals/`'s W&B push
+(`MEG_TOKENS_PER_ITER = 504 * 4096`) so axes line up across the two
+pipelines.
 
 ---
 
@@ -182,13 +182,13 @@ overwritten on each run.
 
 | Repo | Path | Role |
 |---|---|---|
-| `signal-and-noise` (this) | `/iopsstor/scratch/cscs/mariagrandury/signal-and-noise` | SNR / decision-accuracy compute + plotting |
-| `swissai-evals-post-train` | `/iopsstor/scratch/cscs/mariagrandury/swissai-evals-post-train` | Submits eval jobs, writes `eval_logs`, pushes to W&B |
+| `signal-and-noise` (this) | `snr-multilingual/src/signal-and-noise` | SNR / decision-accuracy compute + plotting |
+| `evals` | `snr-multilingual/src/evals` | Submits eval jobs, writes `eval_logs`, pushes to W&B |
+| `pretrain` | `snr-multilingual/src/pretrain` | Pretraining submitter (sbatch wrappers) |
 | `data-mix-small` (Megatron-LM) | `/iopsstor/scratch/cscs/mariagrandury/data-mix-small` | Pretraining; checkpoints under `Megatron-LM/logs/Meg-Runs/...` |
-| `pretrain` | `/iopsstor/scratch/cscs/mariagrandury/pretrain/megatron/data-mix-small` | Pretraining submitter (sbatch wrappers) |
 
-Flow: pretrain → checkpoints → swissai-evals-post-train submits
-`lm_eval` jobs → `eval_logs/.../snr-experiments/<model>-iter<N>/` →
+Flow: `pretrain/` → checkpoints → `evals/` submits `lm_eval` jobs →
+`eval_logs/.../snr-experiments/<model>-iter<N>/` →
 `signal-and-noise/multilingual/run_apertus.py` reads those and produces
 SNR tables + plots.
 
